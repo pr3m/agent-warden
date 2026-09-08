@@ -4,11 +4,13 @@ A macOS app that watches several Claude Code sessions at once and tells you whic
 and why. A small floating bubble is always on screen; click it for the queue. Silent while the
 agents are working.
 
-<!-- prototype: local install only, unsigned, not distributed -->
+> **Prototype.** Local install only. The app is unsigned and not notarised, so it is built from
+> source rather than downloaded. Signing and distribution are out of scope — see
+> [Status and roadmap](#status-and-roadmap).
 
-> The display name is provisional. The repository, Swift modules and data directory keep the
-> original `agent-attention` / `AgentAttention` spelling. This project is unrelated to any other
-> tool called "warden".
+> The display name is provisional. The Swift modules and the local data directory keep the original
+> `agent-attention` / `AgentAttention` spelling. This project is unrelated to any other tool called
+> "warden".
 
 ## What it does
 
@@ -22,11 +24,11 @@ agents are working.
   all the technical detail — is behind one always-present **⋯** menu in the same place on every row.
   Click the bubble again to collapse.
 - **Named by the worktree, not by an identifier.** Six sessions in one repository were labelled
-  `redmy-36`, `redmy-0c`, `redmy-6e`, `redmy-e9` — client-generated names, two characters apart. The
+  `acme-36`, `acme-0c`, `acme-6e`, `acme-e9` — client-generated names, two characters apart. The
   row shows the worktree instead, which is what you call it and what its branch is named after. The
   generated label is kept in full, in **Details**. A name a person actually chose still wins.
 - **The branch it is on now**, read from the working directory. Not the one stamped when the session
-  started — five live sessions all reported `main` while they were each on their own `cs/…` branch.
+  started — five live sessions all reported `main` while they were each on their own `feat/…` branch.
 - **Recent conversation, on request.** Ask a session what it is working on and get back what was
   actually said, attributed and timestamped. Never a summary, never automatic, never persisted.
   **Open session** in that window goes to the linked Ghostty tab — resolving the session again at
@@ -226,13 +228,13 @@ is rejected. Where process inspection is refused, nothing is claimed at all.
 | Stability | this is Claude Code's internal bookkeeping, not a published API. Absent, malformed, oversized or newer-schema records are skipped, and the feature degrades to hooks-only |
 
 Set `AGENT_WARDEN_CLAUDE_HOME` to point discovery somewhere else; the tests and smoke suite use it
-so they can never list the real sessions on this machine.
+so they can never list the real sessions on the machine running them.
 
 ## Waiting on background work
 
 A turn can end while work carries on behind it — a background shell, a subagent, a scheduled job.
-Announcing "work complete" there is simply wrong, and it happened: on this machine a session started
-a background Bash task at 08:27:55Z, ended its turn 44 seconds later, and the app said it was done.
+Announcing "work complete" there is simply wrong, and it happened in testing: a session started a
+background Bash task at 08:27:55Z, ended its turn 44 seconds later, and the app said it was done.
 
 Claude Code's `Stop` hook carries `background_tasks` and `session_crons`, so no guessing and no
 reading of transcript text is needed. What the app does with them:
@@ -284,14 +286,14 @@ raised immediately. Being busy is not a reason to sit on a request for approval.
 **The name.** Claude Code's registry gives a session a `name` and a `nameSource`. Only a name whose
 source says a person chose it (`user`, `custom`, `explicit`, `manual`, `set`, `named`) is used as the
 label. Everything else — `derived`, `auto`, or no source at all — is a client-generated identifier,
-and identifiers make poor names: `redmy-36`, `redmy-0c`, `redmy-6e` and `redmy-e9` were four sessions
+and identifiers make poor names: `acme-36`, `acme-0c`, `acme-6e` and `acme-e9` were four sessions
 in one repository. The row shows the **worktree** instead. The generated label is preserved verbatim
 in **Details**, alongside its source, so nothing is lost.
 
 Nothing is invented. No name is derived from a transcript, from message content, or from a model.
 
 **The branch.** The transcript records `gitBranch` when a session starts and never revisits it, so a
-session that moved into a worktree afterwards still claims the branch it launched on. On this machine
+session that moved into a worktree afterwards still claims the branch it launched on. In practice
 that meant five live sessions all reporting `main`. Agent Warden now reads the working directory
 itself:
 
@@ -650,7 +652,7 @@ separate, and none of them is built.
 Requires macOS 14+ and a Swift 6 toolchain (Xcode or the Command Line Tools).
 
 ```bash
-git clone <this repo> agent-attention && cd agent-attention
+git clone https://github.com/pr3m/agent-warden.git && cd agent-warden
 ./Scripts/build-app.sh      # produces build/AgentWarden.app
 ./install.sh                # backs up ~/.claude/settings.json, adds the hook entries
 ```
