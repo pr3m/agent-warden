@@ -4,9 +4,10 @@ A macOS app that watches several Claude Code sessions at once and tells you whic
 and why. A small floating bubble is always on screen; click it for the queue. Silent while the
 agents are working.
 
-> **Prototype.** Local install only. The app is unsigned and not notarised, so it is built from
-> source rather than downloaded. Signing and distribution are out of scope — see
-> [Status and roadmap](#status-and-roadmap).
+> **Prototype.** Local install only. The app is ad-hoc signed and **not** notarised, so it is built
+> from source rather than downloaded. Ad-hoc signing is what gives it a stable identity for the
+> Automation permission across relaunches; it is not a Developer ID, and there is no Team ID.
+> Notarisation and distribution are out of scope — see [Status and roadmap](#status-and-roadmap).
 
 > The display name is provisional. The Swift modules and the local data directory keep the original
 > `agent-attention` / `AgentAttention` spelling. This project is unrelated to any other tool called
@@ -424,7 +425,10 @@ waiting, and that is reported separately and dominates. A question mark in ordin
 question.
 
 Exit codes: `0` read · `2` usage error · `3` no transcript for that id · `4` a transcript exists but
-could not be read · `5` not a session Agent Warden tracks, so nothing was read. Report on stdout,
+could not be read · `5` not a session Agent Warden tracks, so nothing was read · `6` the session **is**
+tracked, but its Claude process is gone or could not be pinned to the one on record, so nothing was
+read. Six and five are different answers and a script must not fold them together: five means *we do
+not know this session*, six means *we know it and it is no longer the one we knew*. Report on stdout,
 problems on stderr.
 
 **From the conversation window, Open session** does the same thing a linked row does, with two
@@ -583,7 +587,9 @@ what happened.
 aa-bridge serve --approve <dir> [--no-tools] [--socket <path>]   # the host: owns the socket and its sessions
 aa-bridge start --cwd <dir> --request-id <id> [--model opus]     # a NEW session, id generated here
 aa-bridge send  --session <uuid> --message-id <id> --prompt …    # one turn at a time
-aa-bridge status|events|stop --session <uuid>
+aa-bridge focus --session <uuid>                                 # bring its own tab to the front
+aa-bridge status [--session <uuid>]                              # the whole host, or one session
+aa-bridge events|stop --session <uuid>
 ```
 
 - **Owned sessions only.** A session id this host did not create is refused, always. The sessions in
@@ -653,9 +659,30 @@ Requires macOS 14+ and a Swift 6 toolchain (Xcode or the Command Line Tools).
 
 ```bash
 git clone https://github.com/pr3m/agent-warden.git && cd agent-warden
-./Scripts/build-app.sh      # produces build/AgentWarden.app
-./install.sh                # backs up ~/.claude/settings.json, adds the hook entries
+./Scripts/release.sh        # build → gates → install → restart. One command.
 ```
+
+`release.sh` is the whole pipeline, so that "it builds" and "it is on your machine and working" stop
+being two different facts. It builds the bundle, runs every gate, verifies the bundle can prove what
+it is, installs it to **`~/Applications/AgentWarden.app`**, rewires the hooks and the login item at
+their new path, links the commands onto your `PATH`, and restarts Agent Warden and nothing else.
+Any gate that fails stops it before the running app is touched.
+
+| Step | What has to be true |
+|---|---|
+| Build | the bundle compiles and is ad-hoc signed |
+| Gates | tests, smoke and the UI check all pass |
+| Verify | every bundled executable is present, executable, and reports the *same* version; the bundle satisfies its own signature |
+| Install | the previous bundle is moved aside, not deleted — a failure at any point puts it back |
+| Rewire | hooks, login item and command links all point at what was just installed, and are checked afterwards to say so |
+| Protect | your chime and mute settings and your terminal pairings are hashed before and after, and every hook that is not ours must come out byte-identical |
+
+**The app is installed outside the repository, on purpose.** It used to *be* the repo's `build/`
+directory, so the install was only ever as stable as the folder it was built in — renaming that
+folder broke the hook entries, the login item and the build cache at once, and none of them said so.
+The repo can now be renamed, moved or deleted without any of that following.
+
+`./install.sh` still exists for wiring hooks only, without building or moving anything.
 
 | Flag | Effect |
 |---|---|
@@ -663,6 +690,27 @@ git clone https://github.com/pr3m/agent-warden.git && cd agent-warden
 | `--settings PATH` | wire a project `.claude/settings.json` instead of the user one |
 | `--login-item` | also start the app at login (opt-in; nothing is installed automatically) |
 | `--no-launch` | wire the hooks without starting the app |
+| `--link-dir DIR` | put the command symlinks somewhere other than `~/.local/bin` |
+| `--no-path` | put nothing on `PATH`; use the full paths inside the bundle instead |
+
+### The commands, on your PATH
+
+The binaries live inside the app bundle, which is not a directory anybody has on their `PATH`. So
+`install.sh` symlinks the four commands this README uses — `aa-status`, `aa-emit`, `aa-bridge`,
+`aa-session` — into `~/.local/bin`. Without that step every `aa-status` in these pages is a
+`command not found`, which is exactly what it used to be.
+
+Three rules, so this cannot damage anything:
+
+- **A name is not ownership.** A link is replaced only if it already points into an
+  `AgentWarden.app` bundle. A real file, a directory, or somebody else's symlink that happens to be
+  called `aa-status` is reported and left exactly where it is.
+- **Being on disk is not being reachable.** If `~/.local/bin` is not on your `PATH`, the installer
+  says so and prints the line to add, rather than leaving you to find out later.
+- **`uninstall.sh` takes back only what it put there**, by the same test — a link that no longer
+  points into a bundle of ours is listed, not deleted.
+
+`AgentWarden` itself is deliberately not linked. It is an app you open, not a command you type.
 
 **No restarts.** Claude Code watches its settings file and reloads hooks automatically, so sessions
 that are already running pick up the new entries without being closed. And because Agent Warden
@@ -853,11 +901,13 @@ A dismissal is not time-based: it holds until the session does real work again.
 ## Development
 
 ```bash
-./Scripts/test.sh            # 439 unit and integration tests
-./Scripts/smoke-test.sh      # 116 assertions against the real binaries and the real installer
+./Scripts/release.sh         # build, gate, install, restart — the whole pipeline
+./Scripts/release.sh --no-install   # build and gate only; leave the running app alone
+./Scripts/test.sh            # 847 unit and integration tests across 78 suites
+./Scripts/smoke-test.sh      # 197 assertions against the real binaries and the real installer
 ./Scripts/build-app.sh       # build the .app bundle
 
-build/AgentWarden.app/Contents/MacOS/AgentWarden --uicheck    # 281 checks on the bubble and panel (289 with --png)
+build/AgentWarden.app/Contents/MacOS/AgentWarden --uicheck    # 456 checks on the bubble and panel (more with --png)
 build/AgentWarden.app/Contents/MacOS/AgentWarden --selftest   # one refresh cycle, as text
 build/AgentWarden.app/Contents/MacOS/aa-emit --doctor         # what a hook would record here
 build/AgentWarden.app/Contents/MacOS/aa-status --json         # the queue, read-only

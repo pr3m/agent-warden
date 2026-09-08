@@ -126,7 +126,13 @@ case "serve":
     // The visible launcher needs the relay that runs in the tab. It sits beside this binary in the
     // app bundle; when it is not there, visible sessions are refused rather than silently becoming
     // background ones.
-    let relay = URL(fileURLWithPath: CommandLine.arguments[0])
+    // Found from the **running executable**, not from `argv[0]`. A shell may pass argv[0] as the
+    // bare name it was typed as — `nohup aa-bridge serve …` does exactly that — and a bare name has
+    // no directory to look beside, so the relay was not found and visible sessions were refused
+    // with "this host cannot open visible sessions". A silent downgrade to a feature being missing,
+    // caused by how the command happened to be invoked, is not a thing to leave in.
+    let ownPath = Bundle.main.executablePath ?? CommandLine.arguments[0]
+    let relay = URL(fileURLWithPath: ownPath)
         .resolvingSymlinksInPath().deletingLastPathComponent()
         .appendingPathComponent("aa-session").path
     let visible: BridgeClientLaunching? = FileManager.default.isExecutableFile(atPath: relay)

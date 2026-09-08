@@ -21,6 +21,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let branches = BranchService()
     private let contextWindow = SessionContextWindow()
     private let pairings: PairingStore
+    /// Asks one unlinked session's terminal to identify itself, off the main thread. See
+    /// `TabAutoLinker` for why it is one at a time and why it stops asking.
+    private let autoLinker: TabAutoLinker
+    private let autoLinkQueue = DispatchQueue(label: "ai.wundamental.agent-warden.autolink")
     private lazy var pairingWindow = PairingWindow()
     /// The last completed registry scan, kept so the status interface can report its freshness.
     private var lastDiscovery: DiscoveryReport?
@@ -43,6 +47,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         try? paths.createDirectories()
         store = EventStore(paths: paths)
         pairings = PairingStore(url: paths.pairingsFile)
+        autoLinker = TabAutoLinker(ghostty: GhosttyAdapter(), pairings: pairings)
         config = AttentionConfig.load(from: paths.configFile)
         bubble = BubbleController(size: CGFloat(config.bubbleSize))
         engine = AttentionEngine(
@@ -207,6 +212,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         announce(effects)
         render()
 
+        // One handshake per tick, off this thread: it takes the script gate and waits on a
+        // terminal, and neither belongs on the thread that draws the queue. A tick that finds
+        // nothing to link does nothing at all.
+        let identities = engine.sessions.values.map(\.identity)
+        autoLinkQueue.async { [weak self] in
+            guard let self else { return }
+            if self.autoLinker.linkOne(among: identities) {
+                DispatchQueue.main.async { self.render() }   // the row can say so straight away
+            }
+        }
+
         // Rate-limited internally, and entirely off this thread.
         discovery.scan()
         branches.refresh(
@@ -282,7 +298,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // panel themselves, in which case it is theirs to close.
         if items.isEmpty { presentation.queueEmptied() }
 
-        bubble.update(pendingCount: items.count, expanded: isExpanded)
+        bubble.update(pendingCount: items.count, unseenCount: engine.unseenCount, expanded: isExpanded)
         if config.bubbleEnabled { bubble.show() } else { bubble.hide() }
 
         panel.settings = config
@@ -327,7 +343,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// The one way in: a click on the bubble, or the menu item that says so.
     private func toggleExpansion() {
+        let wasExpanded = isExpanded
         presentation.userToggled()
+        // Marked on the way **out**, not on the way in. Marking them as the panel opens would clear
+        // every row's "new" dot in the same instant the panel appeared to show it — the indicator
+        // would be correct and useless. Closing the panel is the honest moment: they were in front
+        // of you, and you are done looking. Seeing is still not deciding — nothing is dismissed,
+        // resolved or snoozed, and the queue is exactly as long afterwards.
+        if wasExpanded, !isExpanded, engine.markVisibleAsSeen(at: Date()) > 0 {
+            try? store.save(snapshot: engine.snapshot())   // so a restart does not make them new again
+        }
         render()
     }
 
@@ -345,7 +370,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func collapseForPresentation() {
         // A click elsewhere puts the view away. Nothing in the queue is decided by it, and nothing
         // will bring it back except the user asking again.
+        let wasExpanded = isExpanded
         presentation.clickedAway()
+        // Clicking away is still having looked: the rows were on screen. Same rule as the bubble,
+        // so a queue does not stay marked new because of *how* the panel was closed.
+        if wasExpanded, !isExpanded, engine.markVisibleAsSeen(at: Date()) > 0 {
+            try? store.save(snapshot: engine.snapshot())
+        }
         render()
     }
 
@@ -542,6 +573,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// front is not evidence that the right tab was found, let alone that the ask was dealt with,
     /// so an app-only jump leaves the card exactly where it was.
     private func open(_ identity: SessionIdentity, clearing itemID: String?) {
+        // Read, now. Clicking a row is unambiguous evidence that it was in front of the user, so the
+        // dot goes out on the click rather than on the outcome. Whether Ghostty could be reached,
+        // and whether the right tab was found, are separate questions asked below — and a row that
+        // still shows as unread after you clicked it is simply wrong, however that jump ended.
+        if let itemID, engine.markSeen(itemID: itemID, at: Date()) {
+            persist()
+            render()
+        }
+
         let pairing = pairings.pairing(for: identity.sessionID)
         let plan = TerminalTarget.plan(for: identity, pairing: pairing)
         guard plan.confidence != .none else {
@@ -557,7 +597,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
             switch outcome.level {
             case .exactTab:
-                if let itemID { _ = self.engine.dismiss(itemID: itemID) }
+                // Demoted, not dismissed. You are now looking at the session, so this row drops
+                // below everything you have not been to — but opening a tab is how you find out it
+                // still needs you, so it stays in the queue until it is answered or dismissed.
+                if let itemID { _ = self.engine.markVisited(itemID: itemID, at: Date()) }
                 self.panel.flash(outcome.message)
             case .appOnly:
                 // Say which tab to look for. We cannot select it, so identifying it is the help.

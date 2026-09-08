@@ -19,7 +19,8 @@ DATA_DIR="${AGENT_ATTENTION_HOME:-$HOME/Library/Application Support/AgentAttenti
 LAUNCH_AGENT="$HOME/Library/LaunchAgents/dev.agentwarden.plist"
 LAUNCH_LABEL="dev.agentwarden"
 
-SETTINGS="$HOME/.claude/settings.json"
+DEFAULT_SETTINGS="$HOME/.claude/settings.json"
+SETTINGS="$DEFAULT_SETTINGS"
 DRY_RUN=""
 PURGE=""
 
@@ -40,6 +41,20 @@ if [ -n "$DRY_RUN" ]; then
   exit 0
 fi
 
+# The login item and the PATH links belong to the *user-level* install, not to whichever settings
+# file was named. A `--settings` pointed somewhere else is a project uninstall — or somebody testing
+# this script — and taking the real login item with it is a side effect nobody asked for, and a
+# silent one: the plist is simply gone and the app stops starting at login. Observed exactly once,
+# which is why this guard exists.
+if [ "$SETTINGS" != "$DEFAULT_SETTINGS" ]; then
+  echo
+  echo "note: --settings names a file other than the user one, so the login item and the PATH"
+  echo "      links are left alone. Run without --settings to remove those too."
+  echo
+  echo "Done. Those hook entries are gone; nothing user-level was touched."
+  exit 0
+fi
+
 OWNERSHIP="$(/usr/bin/python3 "$ROOT/Scripts/launch-agent.py" check "$LAUNCH_AGENT" "$LAUNCH_LABEL" "$APP_BINARY")"
 if [ "$OWNERSHIP" = "ours" ]; then
   echo
@@ -50,6 +65,24 @@ elif [ "$OWNERSHIP" = "foreign" ]; then
   echo
   echo "note: $LAUNCH_AGENT exists but is not ours — left untouched."
 fi
+
+echo
+echo "== Removing the commands from your PATH =="
+# Removed only where the link still points into an AgentWarden.app bundle. A real file, a
+# directory, or somebody else's symlink that happens to share the name is not ours and is listed
+# rather than deleted — the same rule the hooks and the login item are held to.
+LINK_DIR="${LINK_DIR:-$HOME/.local/bin}"
+removed=0
+for name in aa-status aa-emit aa-bridge aa-session; do
+  target="$LINK_DIR/$name"
+  [ -L "$target" ] || continue
+  existing="$(readlink "$target" || true)"
+  case "$existing" in
+    */AgentWarden.app/Contents/MacOS/*) rm -f "$target"; removed=$((removed + 1)) ;;
+    *) echo "  left $target alone — it does not point into an Agent Warden bundle" ;;
+  esac
+done
+echo "removed       : $removed command symlink(s) from $LINK_DIR"
 
 echo
 echo "== Stopping this copy of the app =="

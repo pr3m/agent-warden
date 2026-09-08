@@ -33,7 +33,10 @@ final class GhosttyAdapter: GhosttyControlling, @unchecked Sendable {
          executor: ScriptExecuting? = nil,
          runningProbe: (() -> Bool)? = nil) {
         self.timeout = timeout
-        self.runner = BoundedScriptRunner(executor: executor ?? AppleScriptExecutor())
+        // The app has a main run loop of its own, so the same rule applies here as in the bridge
+        // host: an Apple event sent from a background thread while that loop is pumping loses its
+        // reply to the main thread and never returns. See `MainRunLoopScriptExecutor`.
+        self.runner = BoundedScriptRunner(executor: executor ?? MainRunLoopScriptExecutor(AppleScriptExecutor()))
         self.runningProbe = runningProbe ?? {
             !NSRunningApplication.runningApplications(withBundleIdentifier: GhosttyAdapter.bundleIdentifier).isEmpty
         }
@@ -58,6 +61,45 @@ final class GhosttyAdapter: GhosttyControlling, @unchecked Sendable {
     private var isRunning: Bool { runningProbe() }
 
     // MARK: - Reading
+
+    /// Every terminal, with the name it is showing. One record per line, four fields each.
+    ///
+    /// Used only by `TabHandshake`, to find the terminal answering to a token it just wrote. A name
+    /// read here is never compared against a session's own name — that would be the guess the
+    /// handshake exists to avoid.
+    func readAllTerminals() -> Result<[TerminalSnapshot], GhosttyFailure> {
+        guard isRunning else { return .failure(.notRunning) }
+        // A unit separator between fields and a record separator between terminals: a tab name can
+        // contain anything at all, including newlines, and splitting on those would invent tabs.
+        let script = """
+        tell application id "\(GhosttyAdapter.bundleIdentifier)"
+            set fieldSep to (character id 31)
+            set recordSep to (character id 30)
+            set outText to ""
+            repeat with t in terminals
+                set outText to outText & (id of t) & fieldSep & (name of t) & fieldSep ¬
+                    & (working directory of t) & recordSep
+            end repeat
+            return outText
+        end tell
+        """
+        switch run(script) {
+        case .failure(let failure): return .failure(failure)
+        case .success(let text):
+            let records = text.components(separatedBy: "\u{1E}")
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+            return .success(records.compactMap { record in
+                let fields = record.components(separatedBy: "\u{1F}")
+                guard let id = fields.first.map(trimmed), GhosttyAdapter.isPlausibleID(id) else {
+                    return nil                      // a record we cannot read is not a terminal
+                }
+                return TerminalSnapshot(terminalID: id,
+                                        name: fields.count > 1 ? fields[1] : nil,
+                                        workingDirectory: fields.count > 2 ? trimmed(fields[2]) : nil)
+            })
+        }
+    }
 
     func readSelectedTerminal() -> Result<TerminalSnapshot, GhosttyFailure> {
         guard isRunning else { return .failure(.notRunning) }

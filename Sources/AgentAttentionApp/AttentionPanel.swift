@@ -638,6 +638,9 @@ final class AttentionPanelController {
     /// offer. A linked session navigates to its tab. An unlinked one opens its recent conversation,
     /// from where it can be linked. The tooltip and the accessibility label say which, because a
     /// click that does something other than what you expected is worse than a button you can see.
+    /// Has this row's request not been read yet? A row with no request is never "new".
+    private func isUnseenRow(_ row: Row) -> Bool { row.item?.isUnseen == true }
+
     private func sessionRow(_ row: Row) -> SessionRowView {
         let identity = row.identity
         let pairing = pairingLookup?(identity.sessionID)
@@ -652,18 +655,47 @@ final class AttentionPanelController {
             guard let self else { return }
             switch primary {
             case .openLinkedTab, .bringTerminalForward:
-                if let session = row.session { self.onOpenSession?(session) }
-                else if let item = row.item { self.onActivate?(item) }
+                // The **item** first, whenever the row has one. A row usually has both a session
+                // record and an open request, and handing over only the session dropped the item id
+                // on the floor — so nothing could be marked read or moved down the list, and a row
+                // kept its unread dot after you had plainly just clicked it and jumped to its tab.
+                if let item = row.item { self.onActivate?(item) }
+                else if let session = row.session { self.onOpenSession?(session) }
             case .showContext:
                 self.onShowContext?(identity)
             }
         }
         view.setAccessibilityElement(true)
         view.setAccessibilityRole(.button)
+        if isUnseenRow(row) { view.setAccessibilityValue("Not read yet") }
 
         let name = AttentionPanelController.label(size: 13, weight: .semibold,
                                                   color: AttentionPanelController.primaryColor)
-        name.stringValue = identity.readableName
+        // A dot on the rows you have not read yet, so the list answers "what is new here?" without
+        // being counted or opened. Drawn into the name rather than beside it: the name owns a fixed
+        // width, and a sibling view would push it or truncate it. Marks are cleared when the panel
+        // closes, not when it opens — see `markVisibleAsSeen`.
+        // What the tab is called wins over what the folder is called.
+        //
+        // The old fallback was the worktree directory, because the tab title was unreachable — so
+        // four sessions in one repository all read "Redmy" while their tabs plainly said
+        // `client-info t1`, `release prep` and `velocity analysis`. A tab title is not a derived
+        // name: somebody chose it. It is only used when this session is *linked* to that tab, so it
+        // is the name of this session's own terminal and not the closest-looking one.
+        let displayName = TabName.readable(pairing?.terminalName) ?? identity.readableName
+        let isUnseen = row.item?.isUnseen == true
+        if isUnseen {
+            let marked = NSMutableAttributedString(
+                string: "● ", attributes: [.foregroundColor: AttentionPanelController.unseenColor])
+            marked.append(NSAttributedString(
+                string: displayName,
+                attributes: [.foregroundColor: AttentionPanelController.primaryColor]))
+            marked.addAttribute(.font, value: NSFont.systemFont(ofSize: 13, weight: .semibold),
+                                range: NSRange(location: 0, length: marked.length))
+            name.attributedStringValue = marked
+        } else {
+            name.stringValue = displayName
+        }
         name.maximumNumberOfLines = 2
         name.preferredMaxLayoutWidth = rowTextWidth
         name.widthAnchor.constraint(equalToConstant: rowTextWidth).isActive = true
@@ -1085,6 +1117,9 @@ final class AttentionPanelController {
     /// rather than trusting this comment.
     static let plateColor = NSColor(srgbRed: 0.13, green: 0.13, blue: 0.13, alpha: 1.0)
     static let primaryColor = NSColor(srgbRed: 0.97, green: 0.97, blue: 0.97, alpha: 1.0)
+    /// The "you have not read this" dot. The same accent as the badge, because it means the same
+    /// thing in a different place — and nothing else in the panel uses it.
+    static let unseenColor = NSColor.systemOrange
     static let supportingColor = NSColor(srgbRed: 0.82, green: 0.82, blue: 0.82, alpha: 1.0)
     static let headingColor = NSColor(srgbRed: 0.92, green: 0.92, blue: 0.92, alpha: 1.0)
     /// The footer only: quieter than supporting text, still well over the floor.
@@ -1358,6 +1393,23 @@ extension AttentionPanelController {
     var debugVersionLabelText: String { versionLabel.stringValue }
 
     var debugRowCount: Int { renderedRows.count }
+
+    /// Every text field under a view, at any depth. Rows nest their labels in stacks.
+    static func allTextFields(in view: NSView) -> [NSTextField] {
+        view.subviews.flatMap { child -> [NSTextField] in
+            if let label = child as? NSTextField { return [label] }
+            return allTextFields(in: child)
+        }
+    }
+
+    /// Which rendered rows carry the "not read yet" dot. Read from the drawn text, not from the
+    /// data that produced it — a check that asks the model what it said proves nothing about the row.
+    var debugUnseenMarkedRows: [Int] {
+        renderedRows.enumerated().compactMap { index, row in
+            AttentionPanelController.allTextFields(in: row)
+                .contains { $0.attributedStringValue.string.hasPrefix("● ") } ? index : nil
+        }
+    }
 
     /// Labels whose text needs more room than they were given.
     ///

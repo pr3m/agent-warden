@@ -27,7 +27,15 @@ final class BubbleView: NSView, CursorHosting {
     var hovering = false
 
     private(set) var pendingCount = 0
+    private(set) var unseenCount = 0
     private(set) var isExpanded = false
+    private let totalLabel = NSTextField(labelWithString: "")
+
+    // Read back from the views themselves, for checks.
+    var badgeIsHidden: Bool { badge.isHidden }
+    var badgeText: String { badgeLabel.stringValue }
+    var totalIsHidden: Bool { totalLabel.isHidden }
+    var totalText: String { totalLabel.stringValue }
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -60,6 +68,17 @@ final class BubbleView: NSView, CursorHosting {
         // Dark on amber, not white on amber. White over this orange measures 2.1 : 1, which is
         // under the floor for a control — and the badge is the one thing on the bubble that has to
         // be readable at a glance from across a desk.
+        // The quiet one: how much is still waiting, whether or not any of it is new. Deliberately
+        // small, unfilled and low-contrast — it is a backlog, not an alert, and it must not compete
+        // with the badge for the eye.
+        totalLabel.font = .systemFont(ofSize: 9, weight: .semibold)
+        totalLabel.textColor = NSColor.white.withAlphaComponent(0.55)
+        totalLabel.isBezeled = false
+        totalLabel.isEditable = false
+        totalLabel.drawsBackground = false
+        totalLabel.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(totalLabel)
+
         badgeLabel.textColor = BubbleView.badgeTextColor
         badgeLabel.alignment = .center
         badgeLabel.translatesAutoresizingMaskIntoConstraints = false
@@ -79,11 +98,16 @@ final class BubbleView: NSView, CursorHosting {
             badgeLabel.centerXAnchor.constraint(equalTo: badge.centerXAnchor),
             badgeLabel.centerYAnchor.constraint(equalTo: badge.centerYAnchor),
             badge.widthAnchor.constraint(greaterThanOrEqualTo: badgeLabel.widthAnchor, constant: 10),
+
+            // Opposite corner from the badge on purpose: the two numbers answer different questions
+            // and must never be mistaken for each other at a glance.
+            totalLabel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 7),
+            totalLabel.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -6),
         ])
 
         setAccessibilityElement(true)
         setAccessibilityRole(.button)
-        update(pendingCount: 0, expanded: false)
+        update(pendingCount: 0, unseenCount: 0, expanded: false)
     }
 
     override func layout() {
@@ -106,14 +130,23 @@ final class BubbleView: NSView, CursorHosting {
         layer?.borderColor = (pendingCount > 0
             ? NSColor.systemOrange.withAlphaComponent(0.7)
             : NSColor.white.withAlphaComponent(0.18)).cgColor
-        layer?.shadowColor = NSColor.black.cgColor
-        layer?.shadowOpacity = 0.35
-        layer?.shadowRadius = 8
-        layer?.shadowOffset = CGSize(width: 0, height: -2)
+        // **No layer shadow here, on purpose.** This view *is* the window's content view, and the
+        // window is exactly the size of the disc. A shadow drawn by this layer is therefore clipped
+        // to the window rectangle: it cannot spread outside the circle, so all that renders is the
+        // shadow filling the four corners around it — a grey square with a hole in the middle,
+        // which is precisely what it looked like. Giving it a circular `shadowPath` does not help,
+        // because the clipping is the window, not the path. The shadow is cast by the *window*
+        // instead (`hasShadow`), which is not clipped and follows the content's own alpha.
+        window?.invalidateShadow()
     }
 
-    func update(pendingCount: Int, expanded: Bool) {
+    /// - Parameter unseenCount: how many of `pendingCount` the user has not looked at yet. The badge
+    ///   counts these; the quiet corner number counts everything still waiting. A queue that is all
+    ///   old shows no badge at all, which is the point: the badge means *new*, and a badge that is
+    ///   permanently lit is a badge nobody reads.
+    func update(pendingCount: Int, unseenCount: Int, expanded: Bool) {
         self.pendingCount = pendingCount
+        self.unseenCount = min(max(0, unseenCount), pendingCount)
         self.isExpanded = expanded
 
         // A shield, not a bell: this is a watch that is always on, not a notification that fired.
@@ -122,15 +155,27 @@ final class BubbleView: NSView, CursorHosting {
             ?? NSImage(systemSymbolName: "shield", accessibilityDescription: nil)
         glyph.alphaValue = pendingCount > 0 ? 1.0 : 0.75
 
-        badge.isHidden = pendingCount == 0
-        badgeLabel.stringValue = pendingCount > 99 ? "99+" : "\(pendingCount)"
+        badge.isHidden = self.unseenCount == 0
+        badgeLabel.stringValue = self.unseenCount > 99 ? "99+" : "\(self.unseenCount)"
+        // Shown only when it says something the badge does not: either nothing is new, or not
+        // everything waiting is new. Two identical numbers on one bubble is noise.
+        totalLabel.isHidden = pendingCount == 0 || pendingCount == self.unseenCount
+        totalLabel.stringValue = pendingCount > 99 ? "99+" : "\(pendingCount)"
 
         // Spoken by VoiceOver, and shown on hover. "No sessions need you" would be a claim we
         // cannot make — a session can be uncertain or not yet reporting. This says only what the
         // badge actually counts.
-        let summary = pendingCount == 0
-            ? "Agent Warden. No confirmed requests."
-            : "Agent Warden. \(pendingCount) session\(pendingCount == 1 ? "" : "s") waiting."
+        let waiting = "\(pendingCount) session\(pendingCount == 1 ? "" : "s") waiting"
+        let summary: String
+        if pendingCount == 0 {
+            summary = "Agent Warden. No confirmed requests."
+        } else if self.unseenCount == 0 {
+            summary = "Agent Warden. \(waiting), none new since you looked."
+        } else if self.unseenCount == pendingCount {
+            summary = "Agent Warden. \(waiting), all new."
+        } else {
+            summary = "Agent Warden. \(waiting), \(self.unseenCount) new."
+        }
         setAccessibilityLabel(summary)
         setAccessibilityValue("\(pendingCount)")
         setAccessibilityHelp(expanded
@@ -323,8 +368,13 @@ final class BubbleController {
     init(size: CGFloat = 56) {
         self.size = size
         let rect = NSRect(x: 0, y: 0, width: size, height: size)
+        // `.utilityWindow` is deliberately absent. It is a *titled-panel* trait, and on a borderless
+        // panel AppKit still draws the utility background behind the content — which showed up as a
+        // soft grey square sitting behind the disc, exactly the thing a round, transparent bubble is
+        // not supposed to have. `.nonactivatingPanel` is what actually earns its place here: it is
+        // what lets the bubble be clicked without taking focus from the terminal.
         panel = NSPanel(contentRect: rect,
-                        styleMask: [.borderless, .nonactivatingPanel, .utilityWindow],
+                        styleMask: [.borderless, .nonactivatingPanel],
                         backing: .buffered,
                         defer: false)
         panel.isFloatingPanel = true
@@ -335,7 +385,11 @@ final class BubbleController {
         panel.backgroundColor = .clear
         // Pinned, so a system switch to Light cannot resolve anything drawn here into dark-on-dark.
         panel.appearance = NSAppearance(named: .darkAqua)
-        panel.hasShadow = false          // the layer draws its own, so the circle is not boxed
+        // The window casts the shadow, not the disc's layer. A layer shadow would be clipped to this
+        // window's bounds — and since the window is exactly the size of the disc, that clipped
+        // shadow showed up as a grey square around the circle. A window shadow is drawn outside the
+        // window and follows the alpha of what is in it, so a round bubble casts a round shadow.
+        panel.hasShadow = true
         panel.isReleasedWhenClosed = false
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
         panel.setAccessibilityLabel("Agent Warden")
@@ -376,7 +430,11 @@ final class BubbleController {
 
     var isVisible: Bool { panel.isVisible }
     var accessibilityLabel: String { view.accessibilityLabel() ?? "" }
-    var badgeIsHidden: Bool { view.pendingCount == 0 }
+    /// Reads the real views, not the numbers that were passed in — a check that asks the caller
+    /// what it said proves nothing about what is on screen.
+    var badgeIsHidden: Bool { view.badgeIsHidden }
+    var badgeText: String { view.badgeText }
+    var totalText: String { view.totalIsHidden ? "" : view.totalText }
 
     func apply(placement: BubblePlacement, size: CGFloat) {
         self.size = size
@@ -388,8 +446,8 @@ final class BubbleController {
         view.needsLayout = true
     }
 
-    func update(pendingCount: Int, expanded: Bool) {
-        view.update(pendingCount: pendingCount, expanded: expanded)
+    func update(pendingCount: Int, unseenCount: Int, expanded: Bool) {
+        view.update(pendingCount: pendingCount, unseenCount: unseenCount, expanded: expanded)
     }
 
     func show() {

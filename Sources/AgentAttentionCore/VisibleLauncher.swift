@@ -130,10 +130,17 @@ public final class VisibleClaudeLauncher: BridgeClientLaunching {
                 + "will put in a terminal command")
         }
 
+        ScriptTrace.note("visible.launch", "session=\(sessionID) cwd=\(cwd)")
         let channel = try VisibleSessionChannel(inbox: inbox, outbox: outbox)
         do {
-            let surface = try surfaces.createSurface(plan, inNewWindow: !surfaces.hasOpenWindow())
+            // Asked before the tab is created, and asked once: the answer decides whether this
+            // session joins the window the user already has or gets one of its own.
+            let inNewWindow = !surfaces.hasOpenWindow()
+            let surface = try ScriptTrace.step("visible.createSurface",
+                                               detail: "inNewWindow=\(inNewWindow)",
+                                               { surfaces.createSurface(plan, inNewWindow: inNewWindow) })
                 .get()
+            ScriptTrace.note("visible.surface", "terminal=\(surface.terminalID) window=\(surface.windowID)")
             return VisibleClaudeHandle(surface: surface, surfaces: surfaces, channel: channel,
                                        plan: plan, onLine: onLine, onExit: onExit)
         } catch {
@@ -185,6 +192,9 @@ public final class VisibleClaudeHandle: BridgeClientHandle, @unchecked Sendable 
     private var stopped = false
     private var exitReported = false
     private var reader: Thread?
+    /// Signalled when the client's stream ends — which is the only honest sign the process in the
+    /// tab has actually finished.
+    private let clientEnded = DispatchSemaphore(value: 0)
 
     init(surface: GhosttySurface, surfaces: GhosttySurfaceCreating,
          channel: VisibleSessionChannel, plan: VisibleSessionPlan,
@@ -250,9 +260,23 @@ public final class VisibleClaudeHandle: BridgeClientHandle, @unchecked Sendable 
         writer = nil
         lock.unlock()
 
+        // Closing our end of the inbox is what ends the client: the relay sees EOF, closes Claude's
+        // standard input, Claude exits, and the relay exits with it.
         try? handle?.close()
-        // A terminal that would not close is not a session that stopped cleanly, and saying so is
-        // the difference between a reported failure and a process nobody knows is still there.
+
+        // **Wait for that to happen before touching the tab.** Ghostty asks the user "the terminal
+        // still has a running process — close anyway?" whenever a surface is closed while something
+        // is running in it. That dialog is modal: it blocks the window it belongs to, so the user
+        // cannot even switch tabs until it is answered, and the scripting call returns *before* the
+        // answer, so the close looks like it succeeded while the tab is still there. Letting the
+        // client leave first means there is nothing for Ghostty to warn about, and the tab closes
+        // silently — which is the only version of this that is safe to do to somebody's terminal.
+        // Bounded tightly on purpose. Claude exits as soon as its standard input closes, so this is
+        // normally over in well under a second; the deadline is here so that a client which will not
+        // leave cannot hold a stop open. If it does expire, the close below still runs — and the
+        // adapter checks afterwards whether the tab actually went, so a dialog left pending is
+        // reported as a failed close rather than a clean stop.
+        _ = clientEnded.wait(timeout: .now() + 1.5)
         let closed = surfaces.close(terminalID: surface.terminalID)
         channel.remove()
         switch closed {
@@ -304,6 +328,7 @@ public final class VisibleClaudeHandle: BridgeClientHandle, @unchecked Sendable 
             //
             // Zero, because what we have is the end of the stream rather than a status: the host
             // reads that as *uncertain* for anything still outstanding, which is what it is.
+            self?.clientEnded.signal()
             self?.report(status: 0)
             self?.channel.remove()
         }

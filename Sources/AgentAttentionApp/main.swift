@@ -69,6 +69,22 @@ if arguments.contains("--uicheck") {
                      readabilityPath: value(after: "--readability")))
 }
 
+// One warden, or none. Two instances share one data directory and one state file, so each writes
+// its own view of the queue over the other's: the badge flips between two counts, every event is
+// logged twice, and neither is wrong — they simply disagree. It is invisible from inside either
+// one, which is why this is checked here rather than trusted to whatever launched us.
+//
+// Observed exactly once, and it was self-inflicted: an installer that both bootstrapped the login
+// item and opened the app. That has been fixed too, but the guard belongs here — a double-click on
+// an already-running app would do the same thing, and nobody would suspect it.
+if let other = SingleInstance.otherRunningWarden() {
+    FileHandle.standardError.write(Data("""
+    \(AgentAttentionVersion.displayName) is already running (pid \(other)).     Two of them would share one queue and disagree about it, so this one is stopping.
+
+    """.utf8))
+    exit(0)
+}
+
 let delegate = AppDelegate()
 application.delegate = delegate
 application.setActivationPolicy(.accessory)

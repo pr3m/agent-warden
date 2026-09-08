@@ -6,14 +6,19 @@
 #                                 A timestamped backup is made first. Existing hooks are kept.
 #   2. <data dir>/install-manifest.json — the exact commands we added, per settings file, so
 #                                 uninstall.sh can take exactly those back out and nothing else.
-#   3. Nothing else. No login item unless you pass --login-item.
+#   3. ~/.local/bin/{aa-status,aa-emit,aa-bridge,aa-session} — symlinks, so the commands this
+#                                 project documents can actually be typed. Only ever created where
+#                                 nothing else is in the way; see --no-path to skip entirely.
+#   4. Nothing else. No login item unless you pass --login-item.
 #
 # Usage:
-#   ./install.sh                 build if needed, back up, wire hooks, offer to launch
+#   ./install.sh                 build if needed, back up, wire hooks, link the CLI, offer to launch
 #   ./install.sh --dry-run       show the resulting hooks block, change nothing
 #   ./install.sh --settings PATH target a project settings file instead of the user one
 #   ./install.sh --login-item    also start the app at login (opt-in, off by default)
 #   ./install.sh --no-launch     wire the hooks but do not start the app now
+#   ./install.sh --link-dir DIR  put the command symlinks somewhere else (default ~/.local/bin)
+#   ./install.sh --no-path       do not put anything on PATH
 set -euo pipefail
 
 cd "$(dirname "$0")"
@@ -29,6 +34,11 @@ SETTINGS="$HOME/.claude/settings.json"
 DRY_RUN=""
 LOGIN_ITEM=""
 LAUNCH="yes"
+LINK_DIR="$HOME/.local/bin"
+LINK_PATH="yes"
+# The commands this project documents. `AgentWarden` itself is deliberately not linked: it is an
+# app you open, not a command you type, and a bare `AgentWarden` on PATH would be a surprise.
+LINK_NAMES="aa-status aa-emit aa-bridge aa-session"
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -36,14 +46,16 @@ while [ $# -gt 0 ]; do
     --settings) SETTINGS="$2"; shift 2 ;;
     --login-item) LOGIN_ITEM="yes"; shift ;;
     --no-launch) LAUNCH=""; shift ;;
-    -h|--help) sed -n '2,21p' "$0"; exit 0 ;;
+    --link-dir) LINK_DIR="$2"; shift 2 ;;
+    --no-path) LINK_PATH=""; shift ;;
+    -h|--help) sed -n '2,27p' "$0"; exit 0 ;;
     *) echo "unknown option: $1" >&2; exit 1 ;;
   esac
 done
 
 if [ ! -x "$EMIT" ]; then
   echo "Building the app first…"
-  "$ROOT/Scripts/build-app.sh" release
+  AGENT_WARDEN_NO_AUTO_INSTALL=1 "$ROOT/Scripts/build-app.sh" release
 fi
 
 echo "== Wiring Claude Code hooks =="
@@ -51,6 +63,53 @@ echo "== Wiring Claude Code hooks =="
 
 if [ -n "$DRY_RUN" ]; then
   exit 0
+fi
+
+if [ -n "$LINK_PATH" ]; then
+  echo
+  echo "== Putting the commands on your PATH =="
+  # Ownership is read from the link itself: a symlink is ours only if it resolves into an
+  # AgentWarden.app bundle. Nothing is decided by the file's name — a real file, a directory, or
+  # somebody else's symlink that happens to be called aa-status is left exactly where it is and
+  # reported, because a tool that quietly replaces what it finds is not installable twice.
+  mkdir -p "$LINK_DIR"
+  linked=0
+  refused=0
+  for name in $LINK_NAMES; do
+    source_binary="$APP/Contents/MacOS/$name"
+    target="$LINK_DIR/$name"
+    if [ ! -x "$source_binary" ]; then
+      echo "  skipped $name — not in the app bundle"
+      continue
+    fi
+    if [ -e "$target" ] || [ -L "$target" ]; then
+      if [ -L "$target" ]; then
+        existing="$(readlink "$target" || true)"
+        case "$existing" in
+          */AgentWarden.app/Contents/MacOS/*) ln -sfn "$source_binary" "$target"; linked=$((linked + 1)); continue ;;
+        esac
+      fi
+      echo "  refused $target — already exists and is not one of ours. Left untouched."
+      refused=$((refused + 1))
+      continue
+    fi
+    ln -s "$source_binary" "$target"
+    linked=$((linked + 1))
+  done
+  echo "linked        : $linked command(s) into $LINK_DIR"
+  if [ "$refused" -gt 0 ]; then
+    echo "refused       : $refused (see above; use --link-dir to choose elsewhere)"
+  fi
+
+  # Being on disk is not the same as being reachable. Say which it is, rather than leaving the
+  # user to discover "command not found" later.
+  case ":$PATH:" in
+    *":$LINK_DIR:"*)
+      echo "PATH          : $LINK_DIR is already on your PATH — \`aa-status\` works in a new shell" ;;
+    *)
+      echo "PATH          : $LINK_DIR is NOT on your PATH yet. Add this line to your shell profile:"
+      echo "                  export PATH=\"$LINK_DIR:\$PATH\"" ;;
+  esac
 fi
 
 if [ -n "$LOGIN_ITEM" ]; then
@@ -77,7 +136,11 @@ echo "Next:"
 echo "  • Menu bar icon: ● with the number of sessions waiting; ◦ when nothing needs you."
 echo "  • Click an alert once and macOS will ask to let Agent Warden control your terminal."
 echo "    Allow it, or click-through falls back to the copy-resume button on the card."
-echo "  • Query it without looking at the screen:  \"$STATUS\" --json"
+if [ -n "$LINK_PATH" ]; then
+  echo "  • Query it without looking at the screen:  aa-status --json"
+else
+  echo "  • Query it without looking at the screen:  \"$STATUS\" --json"
+fi
 echo "  • Remove everything with ./uninstall.sh"
 
 if [ -n "$LAUNCH" ] && [ -z "$LOGIN_ITEM" ]; then

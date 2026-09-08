@@ -433,13 +433,23 @@ enum TerminalActivator {
 
     // MARK: - AppleScript
 
-    private enum ScriptResult {
+    private enum ScriptResult: Sendable {
         case success(String)
         case failure(String)
     }
 
+    /// Sent from the thread that owns the main run loop, for the reason set out on
+    /// `MainRunLoopScriptExecutor`: `perform` runs off the main thread by design, and an Apple event
+    /// sent from there while the app's run loop is pumping loses its reply to the main thread and
+    /// never comes back. The same defect that stalled the bridge host's visible launch lives on this
+    /// path too — iTerm2 and Apple Terminal activation — so it is fixed in the same place.
     private static func runAppleScript(_ source: String) -> ScriptResult {
         if ActivationSafety.refuse("terminal AppleScript") { return .failure("refused during a self-check") }
+        return MainRunLoopScriptExecutor.onMainRunLoop { sendAppleScript(source) }
+            ?? .failure("the main thread did not answer in time")
+    }
+
+    private static func sendAppleScript(_ source: String) -> ScriptResult {
         var error: NSDictionary?
         guard let script = NSAppleScript(source: source) else {
             return .failure("could not compile the activation script")

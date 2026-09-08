@@ -49,7 +49,7 @@ enum UICheck {
 
         bubble.apply(placement: .default, size: 56)
         bubble.show()
-        bubble.update(pendingCount: 0, expanded: false)
+        bubble.update(pendingCount: 0, unseenCount: 0, expanded: false)
 
         check("the bubble is visible with nothing pending", bubble.isVisible)
         check("the bubble is 56pt across", abs(bubble.frame.width - 56) < 1 && abs(bubble.frame.height - 56) < 1)
@@ -60,9 +60,25 @@ enum UICheck {
         check("no badge when nothing is pending", bubble.badgeIsHidden)
         check("the empty bubble claims only what it knows", bubble.accessibilityLabel.contains("No confirmed requests"))
 
-        bubble.update(pendingCount: 3, expanded: false)
+        bubble.update(pendingCount: 3, unseenCount: 3, expanded: false)
         check("the badge appears when something is pending", !bubble.badgeIsHidden)
         check("the bubble announces the count", bubble.accessibilityLabel.contains("3 sessions waiting"))
+        check("and says all of it is new", bubble.accessibilityLabel.contains("all new"))
+
+        // The distinction the badge exists for: three still waiting, one of them new.
+        bubble.update(pendingCount: 3, unseenCount: 1, expanded: false)
+        check("the badge counts what is new, not what is waiting", bubble.badgeText == "1")
+        check("and the quiet corner still carries the backlog", bubble.totalText == "3")
+        check("said in words too", bubble.accessibilityLabel.contains("3 sessions waiting, 1 new"))
+
+        // Everything seen: the badge goes out, the work does not.
+        bubble.update(pendingCount: 3, unseenCount: 0, expanded: false)
+        check("nothing new means no badge at all", bubble.badgeIsHidden)
+        check("but the backlog is still shown", bubble.totalText == "3")
+        check("and it says so rather than looking empty",
+              bubble.accessibilityLabel.contains("none new since you looked"))
+
+        bubble.update(pendingCount: 3, unseenCount: 3, expanded: false)
 
         bubble.debugPress()
         bubble.debugPress()
@@ -307,6 +323,42 @@ enum UICheck {
         check("the panel is on screen", visible.intersects(frame))
         check("the panel is fully inside the visible area", visible.contains(frame))
         check("the panel is anchored to the bubble's edge", abs(frame.maxX - bubble.frame.maxX) < 1)
+
+        // The "not read yet" dot. It answers "what is new here?" from the list itself, without
+        // opening anything and without being reduced to one number on the bubble.
+        check("every unread request is marked in the list",
+              panel.debugUnseenMarkedRows.count == items.filter(\.isUnseen).count)
+        check("and something is actually marked when everything is unread",
+              !items.isEmpty && !panel.debugUnseenMarkedRows.isEmpty)
+
+        var readItems = items
+        for index in readItems.indices { readItems[index].seenAt = now }
+        panel.render(items: readItems, sessions: sessions, snoozedCount: 2, maxVisible: 4,
+                     now: now, anchor: bubble.frame)
+        check("a request you have read carries no dot", panel.debugUnseenMarkedRows.isEmpty)
+
+        if var mixed = items.first.map({ [$0] }) {
+            mixed[0].seenAt = nil
+            panel.render(items: mixed + readItems.dropFirst(), sessions: sessions, snoozedCount: 2,
+                         maxVisible: 4, now: now, anchor: bubble.frame)
+            check("only the unread one is marked when some are read and some are not",
+                  panel.debugUnseenMarkedRows.count == 1)
+        }
+        panel.render(items: items, sessions: sessions, snoozedCount: 2, maxVisible: 4,
+                     now: now, anchor: bubble.frame)
+
+        // One warden, or none. Two share a state file and disagree about the queue out loud.
+        check("a bundle nothing is running under reports no other instance",
+              SingleInstance.otherRunningWarden(bundleID: "dev.agentwarden.nothing-runs-this") == nil)
+        check("an empty bundle identity is not treated as a match",
+              SingleInstance.otherRunningWarden(bundleID: nil) == nil)
+        // Deliberately not "there is no other warden": one may genuinely be running while this check
+        // does, and that is the guard working rather than a failure. What must always hold is that
+        // it never points at *us* — a self-match would make the app refuse to start, every time.
+        check("whatever it finds, it never reports this process itself",
+              SingleInstance.otherRunningWarden(bundleID: Bundle.main.bundleIdentifier,
+                                                mine: ProcessInfo.processInfo.processIdentifier)
+                  != ProcessInfo.processInfo.processIdentifier)
         check("the panel opens away from the screen edge", frame.minY < bubble.frame.minY || frame.minY > bubble.frame.maxY)
         check("the panel is tall enough for the session list", frame.height > 300)
         check("the panel stays a panel rather than growing to fit the widest name", frame.width <= 420)
@@ -2049,7 +2101,7 @@ enum UICheck {
         var presentation = PanelPresentation()
 
         func applyPresentation() {
-            bubble.update(pendingCount: items.count, expanded: presentation.isExpanded)
+            bubble.update(pendingCount: items.count, unseenCount: items.count, expanded: presentation.isExpanded)
             if presentation.isExpanded {
                 panel.render(items: items, sessions: sessions, snoozedCount: 0, maxVisible: 4,
                              now: now, anchor: bubble.frame)
@@ -2200,7 +2252,7 @@ enum UICheck {
         panel.flash("", seconds: 0.01)
         panel.render(items: items, sessions: sessions, snoozedCount: 2, maxVisible: 4, now: now,
                      anchor: bubble.frame)
-        bubble.update(pendingCount: 3, expanded: false)
+        bubble.update(pendingCount: 3, unseenCount: 3, expanded: false)
 
         let backdrops = Readability.backdrops()
         guard let panelShot = Readability.snapshot(panel.debugContentView),

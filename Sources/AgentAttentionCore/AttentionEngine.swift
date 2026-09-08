@@ -196,11 +196,66 @@ public final class AttentionEngine {
 
     /// The number shown in the menu bar.
     public var pendingCount: Int { visibleItems().count }
+
+    /// How many of those the user has not had in front of them yet.
+    ///
+    /// This is what the badge counts. The two numbers answer different questions — "is there
+    /// anything new?" and "how much is still waiting on me?" — and showing only the second is why a
+    /// handoff that is deliberately waiting looks identical to an alert that just arrived.
+    public var unseenCount: Int { visibleItems().filter(\.isUnseen).count }
+
+    /// Mark everything currently on screen as looked at. Called when the panel is opened.
+    ///
+    /// Seeing is not deciding: nothing is resolved, dismissed or snoozed here, and the queue is
+    /// exactly as long afterwards as it was before. Items already marked are left alone so the
+    /// timestamp keeps meaning *first* look.
+    /// Answers how many items this actually changed. Deliberately **not** an `EngineEffect`: effects
+    /// are announced, and looking at the panel is not an event anybody should be told about.
+    /// This one row was read. Answers whether that changed anything.
+    ///
+    /// Separate from `markVisibleAsSeen` because clicking a row is a stronger fact than the panel
+    /// having been open: the user went to *this* session. It is applied the moment the click
+    /// happens, not when the jump to the terminal succeeds — whether Ghostty was reachable has
+    /// nothing to do with whether the row was read.
+    @discardableResult
+    public func markSeen(itemID: String, at moment: Date) -> Bool {
+        guard storage[itemID] != nil, storage[itemID]?.seenAt == nil else { return false }
+        storage[itemID]?.seenAt = moment
+        return true
+    }
+
+    /// The user went to this item's tab. It drops below everything unvisited and stays in the queue.
+    ///
+    /// Deliberately not a resolution: arriving somewhere is not the same as having dealt with what
+    /// was asked, and removing the row on arrival meant a question you had merely glanced at was
+    /// gone from the queue for good.
+    @discardableResult
+    public func markVisited(itemID: String, at moment: Date) -> Bool {
+        guard storage[itemID] != nil, storage[itemID]?.visitedAt == nil else { return false }
+        storage[itemID]?.visitedAt = moment
+        // Going there is also having seen it — the row was in front of you when you clicked it.
+        if storage[itemID]?.seenAt == nil { storage[itemID]?.seenAt = moment }
+        return true
+    }
+
+    @discardableResult
+    public func markVisibleAsSeen(at moment: Date) -> Int {
+        var marked = 0
+        for item in visibleItems() where item.isUnseen {
+            storage[item.id]?.seenAt = moment
+            marked += 1
+        }
+        return marked
+    }
     public var snoozedCount: Int { snoozedItems().count }
 
     /// Most blocking first, then the one that has been waiting longest.
     private func sorted(_ items: [AttentionItem]) -> [AttentionItem] {
         items.sorted { lhs, rhs in
+            // Above everything else, including kind: somewhere you have not been outranks somewhere
+            // you have, whatever it is about. Going to a tab moves that row down the list rather
+            // than out of it, so the top of the queue is always what you have not dealt with yet.
+            if lhs.isUnvisited != rhs.isUnvisited { return lhs.isUnvisited }
             if lhs.kind.rank != rhs.kind.rank { return lhs.kind.rank > rhs.kind.rank }
             if lhs.firstSeenAt != rhs.firstSeenAt { return lhs.firstSeenAt < rhs.firstSeenAt }
             return lhs.id < rhs.id

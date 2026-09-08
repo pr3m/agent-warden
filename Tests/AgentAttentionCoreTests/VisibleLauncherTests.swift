@@ -542,38 +542,46 @@ struct GhosttySurfaceScriptTests {
                            withoutTools: false)!
     }
 
+    // Asserted on the script the adapter builds, not on one it managed to send. Sending goes through
+    // the process-wide script gate, so a suite running beside this one can legitimately make the
+    // adapter answer `.busy` and send nothing at all — which failed these tests in 3 runs out of 6,
+    // for a reason that had nothing to do with the script.
+
     @Test("Creating a tab names the window to put it in")
     func aTabNamesItsWindow() {
         // Production mutation this catches: `new tab with configuration` without `in front window`.
         // Ghostty answers -1708, and through NSAppleScript that arrives as no answer at all — the
         // call hangs until its budget expires, which is how a launch turned into a 30-second
         // timeout with no tab and no error.
-        let executor = CapturingExecutor()
-        _ = GhosttySurfaceAdapter(executor: executor).createSurface(plan(), inNewWindow: false)
-
-        let creation = executor.sources.first { $0.contains("new tab") }
-        #expect(creation != nil)
-        #expect(creation?.contains("new tab in front window with configuration") == true)
+        let creation = GhosttySurfaceAdapter.createSurfaceScript(plan(), inNewWindow: false)
+        #expect(creation.contains("new tab in front window with configuration"))
+        #expect(!creation.contains("new window with configuration"))
     }
 
     @Test("Creating a window asks for its selected tab, not the window itself")
     func aWindowResolvesToItsTab() {
-        let executor = CapturingExecutor()
-        _ = GhosttySurfaceAdapter(executor: executor).createSurface(plan(), inNewWindow: true)
-
-        let creation = executor.sources.first { $0.contains("new window") }
-        #expect(creation?.contains("selected tab of theWindow") == true)
-        #expect(creation?.contains("focused terminal of theTab") == true)
+        let creation = GhosttySurfaceAdapter.createSurfaceScript(plan(), inNewWindow: true)
+        #expect(creation.contains("new window with configuration"))
+        #expect(creation.contains("selected tab of theWindow"))
+        #expect(creation.contains("focused terminal of theTab"))
     }
 
     @Test("The command and working directory reach the script as written")
     func theCommandIsCarried() {
-        let executor = CapturingExecutor()
         let subject = plan()
-        _ = GhosttySurfaceAdapter(executor: executor).createSurface(subject, inNewWindow: false)
+        let creation = GhosttySurfaceAdapter.createSurfaceScript(subject, inNewWindow: false)
+        #expect(creation.contains(subject.command))
+        #expect(creation.contains("initial working directory of cfg to \"/private/tmp\""))
+    }
 
-        let creation = executor.sources.first { $0.contains("new tab") }
-        #expect(creation?.contains(subject.command) == true)
-        #expect(creation?.contains("initial working directory of cfg to \"/private/tmp\"") == true)
+    @Test("Both shapes end by returning the terminal and the tab it is in")
+    func bothShapesReturnBothIdentities() {
+        for inNewWindow in [true, false] {
+            let creation = GhosttySurfaceAdapter.createSurfaceScript(plan(), inNewWindow: inNewWindow)
+            #expect(creation.contains("set theTerminal to focused terminal of theTab"),
+                    "the identity is read back from Ghostty, never guessed")
+            #expect(creation.contains("(id of theTerminal)"))
+            #expect(creation.contains("(id of theTab)"))
+        }
     }
 }

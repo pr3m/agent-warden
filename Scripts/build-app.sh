@@ -79,4 +79,12 @@ echo "  status CLI  : $APP/Contents/MacOS/aa-status"
 echo "  bridge CLI  : $APP/Contents/MacOS/aa-bridge  (never auto-started; needs explicit --approve)"
 echo "  session relay: $APP/Contents/MacOS/aa-session  (runs inside a Ghostty tab; started only by aa-bridge)"
 echo
-echo "Next: ./install.sh   (installs the hook entries into ~/.claude/settings.json, with a backup)"
+# A build that stops at "it compiled" leaves two different facts — that it built, and that it is the
+# thing running on your machine. Unless something is explicitly driving this script (the pipeline
+# itself, or install.sh), a successful build carries on into the gates and installs.
+if [ -z "${AGENT_WARDEN_NO_AUTO_INSTALL:-}" ]; then
+  echo
+  exec "$(dirname "$0")/release.sh" --already-built
+fi
+
+echo "Next: ./Scripts/release.sh   (gates, then installs and restarts Agent Warden)"

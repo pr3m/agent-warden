@@ -40,6 +40,7 @@ BIN="$(swift build -c "$CONFIG" --show-bin-path)"
 EMIT="$BIN/aa-emit"
 APP="$BIN/AgentAttention"
 AASTATUS="$BIN/aa-status"
+SESSION="$BIN/aa-session"
 
 # `pwd -P` normalises the path: TMPDIR often ends in a slash, and the app reports the canonical
 # form, so a raw mktemp path would not compare equal.
@@ -865,6 +866,49 @@ CFG_BEFORE="$(shasum -a 256 "$CONTRACT_HOME/config.json" | cut -d" " -f1)"
 AGENT_ATTENTION_HOME="$CONTRACT_HOME" "$AASTATUS" --contract --content >/dev/null
 check "querying leaves the document byte-for-byte unchanged" "$DOC_BEFORE" "$(shasum -a 256 "$CONTRACT_DOC" | cut -d" " -f1)"
 check "and leaves the configuration exactly as it was" "$CFG_BEFORE" "$(shasum -a 256 "$CONTRACT_HOME/config.json" | cut -d" " -f1)"
+
+echo
+echo "== 12. The session relay renders a real stream and survives doing it =="
+# This section exists for a crash that no unit test could have caught. Top-level code in
+# `main.swift` is implicitly @MainActor under Swift 6, and the relay reads Claude's stdout on a
+# Dispatch queue. The moment that handler touched a top-level binding, the runtime isolation check
+# failed and the process died with SIGTRAP — so the tab opened, printed its header, and the relay
+# was already gone when the first line arrived. Nothing was logged and nothing timed out. Only
+# running the real binary against a real stream shows it, which is why it is checked here.
+RELAY_DIR="$WORK/relay"
+mkdir -p "$RELAY_DIR"
+cat > "$RELAY_DIR/stub-claude" <<'STUB'
+#!/bin/bash
+echo '{"type":"system","subtype":"init","session_id":"stub"}'
+while IFS= read -r line; do
+  echo '{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"PONG from the stub"}]}}'
+  echo '{"type":"result","subtype":"success","is_error":false,"result":"PONG from the stub"}'
+  break
+done
+STUB
+chmod +x "$RELAY_DIR/stub-claude"
+mkfifo -m 600 "$RELAY_DIR/in" "$RELAY_DIR/out"
+cat "$RELAY_DIR/out" > "$RELAY_DIR/frames.log" &
+RELAY_READER=$!
+( sleep 0.4
+  printf '%s\n' '{"type":"user","message":{"role":"user","content":[{"type":"text","text":"ping"}]}}'
+  sleep 6 ) > "$RELAY_DIR/in" &
+RELAY_WRITER=$!
+RELAY_UUID="$(/usr/bin/python3 -c 'import uuid;print(str(uuid.uuid4()).upper())')"
+set +e
+"$SESSION" --session-id "$RELAY_UUID" --cwd "$WORK" --claude "$RELAY_DIR/stub-claude" \
+  --inbox "$RELAY_DIR/in" --outbox "$RELAY_DIR/out" > "$RELAY_DIR/tab.log" 2>&1
+RELAY_STATUS=$?
+set -e
+kill "$RELAY_WRITER" "$RELAY_READER" 2>/dev/null || true
+
+check "the relay exits cleanly rather than trapping (133 was SIGTRAP)" "0" "$RELAY_STATUS"
+contains "the tab says which session it is" "$RELAY_UUID" "$(cat "$RELAY_DIR/tab.log")"
+contains "and states plainly that typing is not enabled" "Typing here is not enabled" "$(cat "$RELAY_DIR/tab.log")"
+contains "the reply is rendered for the person to read" "PONG from the stub" "$(cat "$RELAY_DIR/tab.log")"
+missing "and the raw protocol is never shown in the tab" '"type":"assistant"' "$(cat "$RELAY_DIR/tab.log")"
+contains "the raw frames go back to Warden verbatim" '"type":"assistant"' "$(cat "$RELAY_DIR/frames.log")"
+check "every frame the client produced reached Warden" "3" "$(wc -l < "$RELAY_DIR/frames.log" | tr -d ' ')"
 
 echo
 echo "-----------------------------------------"

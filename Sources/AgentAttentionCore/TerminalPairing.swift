@@ -137,22 +137,33 @@ public protocol GhosttyControlling: Sendable {
     /// Which application is frontmost. Focusing a terminal inside Ghostty does not bring Ghostty
     /// forward, so "the right tab is selected" is not the same as "you are looking at it".
     func frontmostApplicationPID() -> Int32?
+    /// Every terminal Ghostty has, with the name each is showing right now.
+    ///
+    /// Only the handshake uses this, and only to find the one terminal answering to a token it just
+    /// wrote. Names are never matched against a session's own name — see `TabHandshake`.
+    func readAllTerminals() -> Result<[TerminalSnapshot], GhosttyFailure>
 }
 
 public extension GhosttyControlling {
     /// Default so an adapter that cannot tell simply says so, rather than claiming the front.
     func frontmostApplicationPID() -> Int32? { nil }
+    /// Default so an adapter that cannot enumerate simply says so. A handshake against it then
+    /// fails, and the session stays unlinked — which is the same place it was before.
+    func readAllTerminals() -> Result<[TerminalSnapshot], GhosttyFailure> { .failure(.unavailable) }
 }
 
 // MARK: - The saved link
 
 /// A link between one Claude Code session and one Ghostty terminal, made by the user.
 ///
-/// Ghostty 1.3.1 exposes a terminal's id, name and working directory — but not its pid or tty — so
-/// nothing in the running system can prove which tab a session lives in. That is why this record
-/// exists and why it is the user who makes it: **the pairing itself is the evidence**, and its
-/// provenance says so. Matching on working directory or title would be a guess, and a guess here
-/// sends somebody to a stranger's tab believing it is their own.
+/// Ghostty 1.3.1 exposes a terminal's id, name and working directory — but not its pid or tty. That
+/// makes *matching* on a name or a directory a guess, and a guess here sends somebody to a
+/// stranger's tab believing it is their own. It does not, however, make the question unanswerable:
+/// writing a one-time token to the tty a session is actually running on, and asking Ghostty which
+/// terminal is now called that, is a challenge only one terminal can answer. See `TabHandshake`.
+///
+/// So a link is evidence either way, and `provenance` says which kind: `userConfirmed` when a person
+/// pointed at the tab, `derivedHandshake` when the terminal identified itself.
 ///
 /// Both ends are pinned to a process incarnation. A recycled pid, a relaunched Ghostty or a
 /// resumed-but-different session all invalidate the link rather than redirecting it.

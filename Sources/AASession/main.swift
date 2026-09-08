@@ -68,11 +68,43 @@ guard FileManager.default.isExecutableFile(atPath: claude) else {
     fail("no Claude Code executable at \(claude)")
 }
 
-let out = FileHandle.standardOutput
-func show(_ lines: [String]) {
-    guard !lines.isEmpty else { return }
-    out.write(Data((lines.joined(separator: "\n") + "\n").utf8))
+/// Everything the background reader touches, in one place that is **not** main-actor isolated.
+///
+/// Top-level code in `main.swift` is implicitly `@MainActor` under Swift 6. Claude's stdout is read
+/// by a `readabilityHandler`, which runs on a Dispatch queue, so the moment that handler called a
+/// top-level function or read a top-level `let`, the runtime isolation check failed and the process
+/// died with `SIGTRAP` — `dispatch_assert_queue` inside `swift_task_isCurrentExecutor`. It was not
+/// a hang and not an error anybody saw: the tab opened, printed its header, and the relay was gone
+/// by the time Claude's first line arrived. Holding the outbox, the renderer and the writing here,
+/// behind a lock, is what makes that handler legal as well as correct.
+final class TranscriptSink: @unchecked Sendable {
+    private let relay: FileHandle
+    private let renderer = TranscriptRenderer()
+    private let lock = NSLock()
+
+    init(relay: FileHandle) { self.relay = relay }
+
+    /// One frame, two audiences: raw to Warden, rendered to the person. Neither gets the other's
+    /// version, and the two writes cannot interleave with another line's.
+    func receive(_ line: String) {
+        lock.lock(); defer { lock.unlock() }
+        if let data = (line + "\n").data(using: .utf8) { try? relay.write(contentsOf: data) }
+        TranscriptSink.emit(renderer.render(line: line))
+    }
+
+    func close() {
+        lock.lock(); defer { lock.unlock() }
+        try? relay.close()
+    }
+
+    /// Writing to the tab. Static and capture-free, so it is callable from any thread.
+    static func emit(_ lines: [String]) {
+        guard !lines.isEmpty else { return }
+        FileHandle.standardOutput.write(Data((lines.joined(separator: "\n") + "\n").utf8))
+    }
 }
+
+func show(_ lines: [String]) { TranscriptSink.emit(lines) }
 
 show(TranscriptRenderer.header(sessionID: sessionID, cwd: cwd, model: model))
 
@@ -96,14 +128,17 @@ guard let relay = FileHandle(forWritingAtPath: outbox) else {
     fail("could not open the outbox pipe")
 }
 
-let renderer = TranscriptRenderer()
-let finished = DispatchSemaphore(value: 0)
-let buffer = LineBuffer { line in
-    // Raw to Warden, rendered to the person. The same frame, two audiences, and neither one gets
-    // the other's version.
-    if let data = (line + "\n").data(using: .utf8) { try? relay.write(contentsOf: data) }
-    show(renderer.render(line: line))
-}
+// `nonisolated(unsafe)` on purpose, and safe for a stated reason: everything below is either
+// internally synchronised (`TranscriptSink`, `LineBuffer`) or already thread-safe
+// (`DispatchSemaphore`). Without it these are main-actor-isolated top-level bindings, and the
+// Dispatch queue that reads Claude's output may not touch them at all.
+nonisolated(unsafe) let sink = TranscriptSink(relay: relay)
+nonisolated(unsafe) let finished = DispatchSemaphore(value: 0)
+// `@Sendable` is what actually makes this closure nonisolated. A closure written at top level in
+// `main.swift` inherits that file's implicit `@MainActor`, whatever the binding it is stored in is
+// annotated with — which is why marking the *variable* nonisolated changed nothing and the process
+// still trapped on the first line Claude produced.
+nonisolated(unsafe) let buffer = LineBuffer { @Sendable line in sink.receive(line) }
 output.fileHandleForReading.readabilityHandler = { handle in
     let data = handle.availableData
     if data.isEmpty {
@@ -122,7 +157,7 @@ do {
     // raw", not "nothing a model wrote is written raw" — an exception is how the rule gets lost.
     show(["", "  ✘ Claude Code could not be started: "
               + TranscriptRenderer.safe(error.localizedDescription), ""])
-    try? relay.close()
+    sink.close()
     exit(3)
 }
 
@@ -143,7 +178,7 @@ feeder.start()
 
 process.waitUntilExit()
 _ = finished.wait(timeout: .now() + 5)
-try? relay.close()
+sink.close()
 
 let status = process.terminationStatus
 show(["", status == 0 ? "  ─ session ended ─" : "  ✘ session ended with status \(status)", ""])

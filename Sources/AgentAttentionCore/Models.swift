@@ -450,6 +450,23 @@ public struct AttentionItem: Codable, Sendable, Equatable, Identifiable {
     /// that is the user having looked at the work, and treating it as such is how a handoff gets
     /// walked past. Only the user responding, or dismissing it, closes one.
     public var awaitsUserAcceptance: Bool
+    /// When the user last had this item **in front of them** — the moment the panel was open with
+    /// this row in it.
+    ///
+    /// Separate from every other date here, and separate from dismissal, because "I have seen this"
+    /// and "I am done with this" are different facts and were being counted as one. A handoff that
+    /// deliberately waits until it is answered is not new after the first look, and a badge that
+    /// keeps insisting it is trains people to stop reading it. `nil` means never looked at.
+    public var seenAt: Date?
+    /// When the user actually **went to this session's tab** from this row.
+    ///
+    /// A third distinct fact, and the reason it is not folded into either of the others: *read* is
+    /// not *visited* is not *dealt with*. Arriving at a tab used to remove the row outright, on the
+    /// grounds that landing there meant it was handled — but opening a session to look at it is
+    /// routinely how you find out it still needs you. So a visit demotes rather than deletes: the
+    /// row drops below everything you have not been to yet, and stays until it is answered or
+    /// dismissed. `nil` means never opened from here.
+    public var visitedAt: Date?
 
     public init(
         id: String = UUID().uuidString,
@@ -463,7 +480,9 @@ public struct AttentionItem: Codable, Sendable, Equatable, Identifiable {
         occurrences: Int = 1,
         snoozedUntil: Date? = nil,
         identity: SessionIdentity,
-        awaitsUserAcceptance: Bool = false
+        awaitsUserAcceptance: Bool = false,
+        seenAt: Date? = nil,
+        visitedAt: Date? = nil
     ) {
         self.id = id
         self.sessionID = sessionID
@@ -477,7 +496,14 @@ public struct AttentionItem: Codable, Sendable, Equatable, Identifiable {
         self.snoozedUntil = snoozedUntil
         self.identity = identity
         self.awaitsUserAcceptance = awaitsUserAcceptance
+        self.seenAt = seenAt
+        self.visitedAt = visitedAt
     }
+
+    /// Not looked at yet. What the bubble's badge counts.
+    public var isUnseen: Bool { seenAt == nil }
+    /// Not been opened from here yet. What decides where the row sits.
+    public var isUnvisited: Bool { visitedAt == nil }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
