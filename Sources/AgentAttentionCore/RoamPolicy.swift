@@ -1,9 +1,9 @@
-import Foundation
-
 /// What the machine's power situation is right now.
 public struct PowerReading: Sendable, Equatable {
     /// Battery percentage, or nil when it cannot be read. Nil is *not* zero.
     public var percent: Int?
+    /// Whether the machine is plugged in. If we misread AC state, the guard might fire
+    /// while plugged in, breaking the guarantee that on AC there is always power.
     public var onAC: Bool
     public init(percent: Int?, onAC: Bool) {
         self.percent = percent
@@ -11,7 +11,16 @@ public struct PowerReading: Sendable, Equatable {
     }
 }
 
+/// What action the guard has decided to take.
+///
+/// The guard returns `none` for every situation where sleeping would be premature or
+/// impossible. It returns `exitAndSleep` only when the battery is low enough on battery
+/// power to risk a hard shutdown.
 public enum RoamGuardAction: Sendable, Equatable {
+    /// Do nothing — roam is off, or the machine is on AC, or the battery is unreadable,
+    /// or the threshold is misconfigured. Each of these is a distinct reason to take no
+    /// action, unified by the principle that we only exit when we can read the battery
+    /// and know it is critically low.
     case none
     /// Exit roam and put the machine to sleep deliberately, while there is still charge.
     case exitAndSleep(percent: Int)
@@ -26,7 +35,11 @@ public enum RoamGuardAction: Sendable, Equatable {
 /// Pure, because the alternative way to test it is to flatten a battery. The caller reads
 /// the machine and applies the action.
 public enum RoamPolicy {
-    /// Sane bounds for a hand-edited config. A threshold of 200 would fire on every tick.
+    /// Sane bounds for a hand-edited config. The minimum is 1 because a threshold of 0
+    /// would sleep immediately when the battery reads 0% (or sleep preventively when it
+    /// reads 1%), giving no margin — we want to let it fall further before intervening.
+    /// The maximum is 50 because a threshold of 200 would fire on every tick, defeating
+    /// the purpose of a threshold.
     public static let thresholdRange = 1...50
 
     public static func guardAction(reading: PowerReading, threshold: Int,
