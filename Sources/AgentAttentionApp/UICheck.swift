@@ -91,7 +91,10 @@ enum UICheck {
         check("pressing the bubble asks to toggle the panel", toggles == 2)
         check("the glyph and badge do not steal the click from the bubble",
               bubble.debugHitTestCentreIsWholeBubble && bubble.debugHitTestOverBadgeIsWholeBubble)
-        check("a click in the halo margin is nobody's — it falls through",
+        // Deliberately not "it falls through": while roam is off the transparent margin really
+        // does, but while the ring is painted the WindowServer has already committed the click to
+        // this window and all `hitTest` can do is refuse it. What is asserted is the refusal.
+        check("a click in the halo margin is not the bubble's",
               bubble.debugHitTestInHaloMarginIsNothing)
 
         // Roam's own channel. It must be able to say "roaming" and "three waiting" at once, so the

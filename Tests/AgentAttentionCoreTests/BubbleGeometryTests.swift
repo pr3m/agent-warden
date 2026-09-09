@@ -264,4 +264,33 @@ struct BubbleGeometryTests {
             in: screen, haloInset: 0)
         #expect(withHalo == withoutHalo)
     }
+
+    /// The disc is clamped and the rect is *then* grown back out by the margin, so clamping the
+    /// disc flush against the screen edge would leave the window hanging `haloInset` points past
+    /// it. Only the transparent margin would be off screen, which is why it is easy to miss — but
+    /// `BubbleController` drags with `clamp(window)`, keeping the whole window on screen, so a
+    /// bubble dragged into the corner and one restored there would disagree about where the edge
+    /// is. What is clamped has to be the disc inside the *inset* visible frame.
+    @Test("A bubble pushed into the corner keeps its halo on screen",
+          arguments: ScreenCorner.allCases)
+    func theWindowNeverHangsOffTheEdge(corner: ScreenCorner) {
+        let inset = BubbleGeometry.haloInset
+        let windowSize = CGSize(width: bubbleSize.width + inset * 2,
+                                height: bubbleSize.height + inset * 2)
+        // Absurd on both axes, so the clamp decides the position and the offset does not.
+        let shoved = BubblePlacement(corner: corner, offsetX: 99_999, offsetY: 99_999)
+
+        for visible in [screen, offsetScreen] {
+            let window = BubbleGeometry.frame(for: shoved, size: windowSize, in: visible,
+                                              haloInset: inset)
+
+            #expect(visible.contains(window))
+            // Not a vacuous pass: the clamp really did bite, so the window is flush against one
+            // edge in each axis — which is exactly the case that used to overshoot.
+            #expect(window.minX == visible.minX || window.maxX == visible.maxX)
+            #expect(window.minY == visible.minY || window.maxY == visible.maxY)
+            // And it kept the disc at its configured diameter rather than paying for the margin.
+            #expect(window.insetBy(dx: inset, dy: inset).size == bubbleSize)
+        }
+    }
 }

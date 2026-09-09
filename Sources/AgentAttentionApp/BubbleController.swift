@@ -71,7 +71,13 @@ final class BubbleView: NSView, CursorHosting {
         // This view is now only a frame around the disc: the whole of it that is not the disc is
         // the halo margin, and none of it may paint. Stated rather than left to the defaults,
         // because the disc's background, radius and border used to live here.
-        layer?.masksToBounds = false
+        //
+        // There is no `masksToBounds = false` any more. It mattered when this view *was* the disc
+        // and carried the circle's corner radius — it was what stopped the badge being clipped to
+        // the circle. That guard moved to `disc.layer` below, where the badge now is. Here it
+        // could not do anything either way: this view is the window's content view, so its layer's
+        // bounds and the window's clipping rectangle are the same rectangle, and masking to them
+        // cannot remove a pixel the window would have drawn.
         layer?.backgroundColor = nil
         layer?.borderWidth = 0
         layer?.cornerRadius = 0
@@ -202,6 +208,10 @@ final class BubbleView: NSView, CursorHosting {
         // Slightly under solid: the ring's outer edge is flush with the window's, where the
         // window's own drop shadow begins, and it is decoration with nothing drawn on it — no text
         // is measured against it, so no contrast floor applies.
+        //
+        // Painting this ring is also what makes the margin swallow clicks while roaming, because
+        // the WindowServer routes a mouse-down by rendered alpha. Widening or solidifying it
+        // widens that dead zone — see `hitTest` for why nothing here can hand the click on.
         halo.strokeColor = isRoaming
             ? NSColor.systemTeal.withAlphaComponent(0.85).cgColor
             : NSColor.clear.cgColor
@@ -290,9 +300,22 @@ final class BubbleView: NSView, CursorHosting {
     /// meant to open the panel.
     ///
     /// The **halo margin** is decoration too, and must not hit-test at all: a click a few points
-    /// outside the disc has to fall through to whatever is behind, exactly as it did before the
-    /// window grew. The disc's square frame is the boundary, not its circle, because that square is
-    /// precisely what this view's bounds used to be — the corners were clickable then and stay so.
+    /// outside the disc must not be read as a click on the bubble. The disc's square frame is the
+    /// boundary, not its circle, because that square is precisely what this view's bounds used to
+    /// be — the corners were clickable then and stay so.
+    ///
+    /// **A known trade-off, accepted.** Returning `nil` here is not the same as passing the click
+    /// on. The WindowServer decides which *window* gets a mouse-down from window order plus, for a
+    /// non-opaque window, the rendered alpha at that point — and it decides that before AppKit ever
+    /// calls `hitTest`. So while roam is **off** the margin is fully transparent and the click
+    /// really does reach whatever is behind, exactly as the square window's corners always have.
+    /// While roam is **on** the ring is painted, the click is already committed to this window, and
+    /// all this method can do is refuse it: no drag, no toggle, and nothing for the app underneath
+    /// either. A click in that 4pt ring while roaming therefore does nothing at all.
+    ///
+    /// Nothing here can change that — `NSWindow.ignoresMouseEvents` is window-wide, not regional.
+    /// Eliminating it would take a second, decorative window carrying the ring with
+    /// `ignoresMouseEvents = true`, which was judged more machinery than a 4pt ring is worth.
     override func hitTest(_ point: NSPoint) -> NSView? {
         let local = convert(point, from: superview)
         guard disc.frame.contains(local) else { return nil }
