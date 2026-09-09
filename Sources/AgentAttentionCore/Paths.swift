@@ -43,6 +43,9 @@ public struct AppPaths: Sendable, Equatable {
     /// "nothing is watching".
     public var appStatusFile: URL { root.appendingPathComponent("app.json") }
     public var installManifest: URL { root.appendingPathComponent("install-manifest.json") }
+    /// Roam's own state. Warden's data directory, never `~/.claude/roam` — roam here is
+    /// independent of the plugin it replaces.
+    public var roamFile: URL { root.appendingPathComponent("roam.json") }
 
     /// 0700: this directory records which projects you are working on and when. It is nobody
     /// else's business on a shared machine.
