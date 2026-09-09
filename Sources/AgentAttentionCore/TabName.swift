@@ -31,4 +31,15 @@ public enum TabName {
         guard !text.isEmpty, text.count <= 60 else { return text.isEmpty ? nil : String(text.prefix(60)) }
         return text
     }
+
+    /// A name with its tab's ⌘N number in front: `3 - groom red tickets`.
+    ///
+    /// The number is the tab's position in its own window, which is the key that selects it. It is
+    /// only added when there is a real position to add — an unlinked session has no tab, and
+    /// inventing a number for it would send somebody to a stranger's tab. Ghostty binds ⌘1…⌘9, so
+    /// anything past that is still shown (the position is true) but there is no key for it.
+    public static func numbered(index: Int?, name: String) -> String {
+        guard let index, index > 0, index <= 99 else { return name }
+        return "\(index) - \(name)"
+    }
 }

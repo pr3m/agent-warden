@@ -682,7 +682,12 @@ final class AttentionPanelController {
         // `client-info t1`, `release prep` and `velocity analysis`. A tab title is not a derived
         // name: somebody chose it. It is only used when this session is *linked* to that tab, so it
         // is the name of this session's own terminal and not the closest-looking one.
-        let displayName = TabName.readable(pairing?.terminalName) ?? identity.readableName
+        //
+        // The number in front is the tab's ⌘N position, kept current by `TabTitleService` along with
+        // the name. It is the fastest route from "this row needs me" to being in that session.
+        let displayName = TabName.numbered(
+            index: pairing?.tabIndex,
+            name: TabName.readable(pairing?.terminalName) ?? identity.readableName)
         let isUnseen = row.item?.isUnseen == true
         if isUnseen {
             let marked = NSMutableAttributedString(

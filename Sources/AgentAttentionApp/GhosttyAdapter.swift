@@ -101,6 +101,45 @@ final class GhosttyAdapter: GhosttyControlling, @unchecked Sendable {
         }
     }
 
+    /// Where every terminal sits: window position, tab position, id, and the title it shows now.
+    ///
+    /// Walks `windows → tabs → terminals` rather than the flat `terminals` list, because the flat
+    /// list has no position in it and the position is half the point — it is the ⌘N number. A tab
+    /// holding a split contributes one record per terminal, all sharing that tab's number, which is
+    /// correct: both halves of a split are reached by the same key.
+    ///
+    /// Same separators and the same reasoning as `readAllTerminals`: a tab title is arbitrary user
+    /// text and may contain newlines.
+    func readTabLayout() -> Result<[TabPlacement], GhosttyFailure> {
+        guard isRunning else { return .failure(.notRunning) }
+        let script = """
+        tell application id "\(GhosttyAdapter.bundleIdentifier)"
+            set fieldSep to (character id 31)
+            set recordSep to (character id 30)
+            set outText to ""
+            set windowIndex to 0
+            repeat with theWindow in windows
+                set windowIndex to windowIndex + 1
+                set tabIndex to 0
+                repeat with theTab in tabs of theWindow
+                    set tabIndex to tabIndex + 1
+                    repeat with theTerminal in terminals of theTab
+                        set outText to outText & windowIndex & fieldSep & tabIndex & fieldSep ¬
+                            & (id of theTerminal) & fieldSep & (name of theTerminal) & recordSep
+                    end repeat
+                end repeat
+            end repeat
+            return outText
+        end tell
+        """
+        switch run(script) {
+        case .failure(let failure): return .failure(failure)
+        case .success(let text):
+            // The shape check every id gets before it is stored or scripted, applied here too.
+            return .success(TabLayout.parse(text).filter { GhosttyAdapter.isPlausibleID($0.terminalID) })
+        }
+    }
+
     func readSelectedTerminal() -> Result<TerminalSnapshot, GhosttyFailure> {
         guard isRunning else { return .failure(.notRunning) }
         // One record per line, in a fixed order. Names and directories can contain anything, so they

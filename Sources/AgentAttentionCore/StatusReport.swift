@@ -243,6 +243,8 @@ public struct StatusReport: Codable, Sendable, Equatable {
     public struct LinkSummary: Codable, Sendable, Equatable {
         public var terminalID: String
         public var terminalName: String?
+        /// The tab's ⌘N position in its window at the last reading, when one is known.
+        public var tabIndex: Int?
         public var provenance: String
         public var pairedAt: Date
         /// `valid` / `sessionChanged` / `terminalAppChanged` / `terminalAppNotRunning` /
@@ -425,6 +427,7 @@ extension StatusReport {
             return LinkSummary(
                 terminalID: pairing.terminalID,
                 terminalName: pairing.terminalName,
+                tabIndex: pairing.tabIndex,
                 provenance: pairing.provenance,
                 pairedAt: pairing.pairedAt,
                 verdict: verdict.rawValue,

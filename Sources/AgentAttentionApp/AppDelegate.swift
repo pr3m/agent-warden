@@ -25,6 +25,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// `TabAutoLinker` for why it is one at a time and why it stops asking.
     private let autoLinker: TabAutoLinker
     private let autoLinkQueue = DispatchQueue(label: "ai.wundamental.agent-warden.autolink")
+    /// Keeps the name and the ⌘N number on each row matching what the tab bar actually says. See
+    /// `TabTitleService` for why a title has to be re-read rather than remembered.
+    private let tabTitles: TabTitleService
     private lazy var pairingWindow = PairingWindow()
     /// The last completed registry scan, kept so the status interface can report its freshness.
     private var lastDiscovery: DiscoveryReport?
@@ -48,6 +51,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         store = EventStore(paths: paths)
         pairings = PairingStore(url: paths.pairingsFile)
         autoLinker = TabAutoLinker(ghostty: GhosttyAdapter(), pairings: pairings)
+        tabTitles = TabTitleService(ghostty: GhosttyAdapter(), pairings: pairings)
         config = AttentionConfig.load(from: paths.configFile)
         bubble = BubbleController(size: CGFloat(config.bubbleSize))
         engine = AttentionEngine(
@@ -57,6 +61,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             restoring: store.loadSnapshot()
         )
         super.init()
+        tabTitles.onChange = { [weak self] in self?.render() }
         speech.isEnabled = config.speechIsAudible
         speech.voiceIdentifier = config.speechVoiceIdentifier
         chime.isEnabled = config.chimeIsAudible
@@ -225,6 +230,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         // Rate-limited internally, and entirely off this thread.
         discovery.scan()
+        tabTitles.refresh()
         branches.refresh(
             sessions: engine.sessionsNeedingBranchRead(at: Date(), staleAfter: branches.staleAfter)
         )
@@ -353,6 +359,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if wasExpanded, !isExpanded, engine.markVisibleAsSeen(at: Date()) > 0 {
             try? store.save(snapshot: engine.snapshot())   // so a restart does not make them new again
         }
+        // A list somebody is opening is worth one script, however recent the last reading was: the
+        // whole point of the number and the name is to be right at the moment you look at them.
+        if !wasExpanded { tabTitles.refresh(force: true) }
         render()
     }
 

@@ -142,6 +142,11 @@ public protocol GhosttyControlling: Sendable {
     /// Only the handshake uses this, and only to find the one terminal answering to a token it just
     /// wrote. Names are never matched against a session's own name — see `TabHandshake`.
     func readAllTerminals() -> Result<[TerminalSnapshot], GhosttyFailure>
+    /// Where every terminal sits in the tab bar, and what its tab is called right now.
+    ///
+    /// Read repeatedly, because a tab title and a tab position are both things a person changes.
+    /// See `TabPlacement`.
+    func readTabLayout() -> Result<[TabPlacement], GhosttyFailure>
 }
 
 public extension GhosttyControlling {
@@ -150,6 +155,9 @@ public extension GhosttyControlling {
     /// Default so an adapter that cannot enumerate simply says so. A handshake against it then
     /// fails, and the session stays unlinked — which is the same place it was before.
     func readAllTerminals() -> Result<[TerminalSnapshot], GhosttyFailure> { .failure(.unavailable) }
+    /// Default so an adapter that cannot enumerate simply says so. Rows then keep the name and the
+    /// number they already had, which is where they were before.
+    func readTabLayout() -> Result<[TabPlacement], GhosttyFailure> { .failure(.unavailable) }
 }
 
 // MARK: - The saved link
@@ -188,6 +196,12 @@ public struct TerminalPairing: Codable, Sendable, Equatable {
     public var tabID: String?
     public var windowID: String?
     public var terminalName: String?
+    /// The tab's 1-based position in its own window — the ⌘N number — as of the last reading.
+    ///
+    /// A *reading*, not a fact about the link: tabs are dragged, closed and opened, so this is
+    /// refreshed alongside `terminalName` rather than fixed when the link was made. Optional so an
+    /// existing `pairings.json` written before this field existed still loads.
+    public var tabIndex: Int?
     public var workingDirectory: String?
 
     public var pairedAt: Date
@@ -208,6 +222,7 @@ public struct TerminalPairing: Codable, Sendable, Equatable {
         tabID: String? = nil,
         windowID: String? = nil,
         terminalName: String? = nil,
+        tabIndex: Int? = nil,
         workingDirectory: String? = nil,
         pairedAt: Date,
         lastVerifiedAt: Date? = nil,
@@ -225,6 +240,7 @@ public struct TerminalPairing: Codable, Sendable, Equatable {
         self.tabID = tabID
         self.windowID = windowID
         self.terminalName = terminalName
+        self.tabIndex = tabIndex
         self.workingDirectory = workingDirectory
         self.pairedAt = pairedAt
         self.lastVerifiedAt = lastVerifiedAt

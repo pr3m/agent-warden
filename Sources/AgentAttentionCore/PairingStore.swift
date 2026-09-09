@@ -19,6 +19,15 @@ public final class PairingStore {
     }
 
     private let url: URL
+    /// Serialises every read-modify-write on the file.
+    ///
+    /// Three things write here from three threads: a person confirming a link, the auto-linker on
+    /// its own queue when a terminal answers a handshake, and the tab-title reader on its own queue
+    /// every few seconds. Each of those is a load, a change and a write, and without this lock the
+    /// last one to finish wins the whole file — a refresh started before a handshake landed would
+    /// write back the version without it, and a freshly linked session would silently lose its tab
+    /// again. A plain lock is enough: these are three small writes a minute, not a hot path.
+    private let lock = NSLock()
 
     public init(url: URL) {
         self.url = url
@@ -29,6 +38,12 @@ public final class PairingStore {
     /// Everything on disk, keyed by session id. A file we cannot read is an empty set of links, not
     /// an error the user has to deal with — and never a reason to guess at one.
     public func load() -> [String: TerminalPairing] {
+        lock.lock()
+        defer { lock.unlock() }
+        return loadUnlocked()
+    }
+
+    private func loadUnlocked() -> [String: TerminalPairing] {
         guard let data = try? Data(contentsOf: url),
               let file = try? JSONCoding.decoder.decode(File.self, from: data),
               file.schema == File.currentSchema else { return [:] }
@@ -43,17 +58,33 @@ public final class PairingStore {
     /// tab per session, and a second confirmation overwrites the first rather than accumulating.
     @discardableResult
     public func put(_ pairing: TerminalPairing) throws -> [String: TerminalPairing] {
-        var all = load()
-        all[pairing.sessionID] = pairing
-        try write(all)
-        return all
+        try update { $0[pairing.sessionID] = pairing }
     }
 
     @discardableResult
     public func remove(sessionID: String) throws -> [String: TerminalPairing] {
-        var all = load()
-        all.removeValue(forKey: sessionID)
-        try write(all)
+        try update { $0.removeValue(forKey: sessionID) }
+    }
+
+    /// Read, change and write the whole set as one indivisible step.
+    ///
+    /// The only safe way to change several links at once — and the reason it exists rather than a
+    /// caller doing `load()`, editing and `write()`: that sequence reads a version of the file, and
+    /// by the time it writes, another thread's link may already be in it and about to be erased.
+    /// The change is handed the *current* contents, inside the lock.
+    @discardableResult
+    public func update(_ change: (inout [String: TerminalPairing]) -> Void) throws
+        -> [String: TerminalPairing] {
+        lock.lock()
+        defer { lock.unlock() }
+        let before = loadUnlocked()
+        var all = before
+        change(&all)
+        // A change that changed nothing is not a write. The tab-title reader runs every few seconds
+        // and almost always finds every name and number exactly as it left them; writing the file
+        // anyway would be a disk write a few seconds apart, for ever, saying nothing new.
+        guard all != before else { return before }
+        try writeUnlocked(all)
         return all
     }
 
@@ -64,14 +95,22 @@ public final class PairingStore {
     /// or disturb a pending request.
     @discardableResult
     public func retire(keeping liveSessionIDs: Set<String>) throws -> Int {
-        let all = load()
+        lock.lock()
+        defer { lock.unlock() }
+        let all = loadUnlocked()
         let survivors = all.filter { liveSessionIDs.contains($0.key) }
         guard survivors.count != all.count else { return 0 }
-        try write(survivors)
+        try writeUnlocked(survivors)
         return all.count - survivors.count
     }
 
     public func write(_ pairings: [String: TerminalPairing]) throws {
+        lock.lock()
+        defer { lock.unlock() }
+        try writeUnlocked(pairings)
+    }
+
+    private func writeUnlocked(_ pairings: [String: TerminalPairing]) throws {
         let file = File(pairings: pairings.values.sorted { $0.sessionID < $1.sessionID })
         let encoder = JSONCoding.encoder
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]

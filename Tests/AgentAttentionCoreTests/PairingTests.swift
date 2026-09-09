@@ -162,6 +162,61 @@ struct PairingTests {
         #expect(store.pairing(for: "sess-1") == nil)
     }
 
+    /// The tab-title reader changes several links at once, every few seconds, on its own thread,
+    /// while the auto-linker adds new ones on another. Both go through `update` for this reason.
+    @Test("Changing several links at once is one indivisible step")
+    func updateIsAtomic() throws {
+        let paths = try Fixture.temporaryPaths()
+        defer { try? FileManager.default.removeItem(at: paths.root) }
+        let store = PairingStore(url: paths.pairingsFile)
+        try store.put(pairing(session: "sess-1", terminalID: "term-1"))
+        try store.put(pairing(session: "sess-2", terminalID: "term-2"))
+
+        try store.update { all in
+            all["sess-1"]?.terminalName = "groom red tickets"
+            all["sess-1"]?.tabIndex = 3
+            all["sess-2"]?.tabIndex = 6
+        }
+        #expect(store.pairing(for: "sess-1")?.terminalName == "groom red tickets")
+        #expect(store.pairing(for: "sess-1")?.tabIndex == 3)
+        #expect(store.pairing(for: "sess-2")?.tabIndex == 6)
+    }
+
+    /// Reading the tab bar every few seconds nearly always finds everything as it left it. That
+    /// must cost nothing — a write every few seconds, for ever, to say nothing new is not free.
+    @Test("A change that changes nothing does not touch the file")
+    func aNoOpUpdateWritesNothing() throws {
+        let paths = try Fixture.temporaryPaths()
+        defer { try? FileManager.default.removeItem(at: paths.root) }
+        let store = PairingStore(url: paths.pairingsFile)
+        try store.put(pairing())
+
+        let before = try FileManager.default
+            .attributesOfItem(atPath: paths.pairingsFile.path)[.modificationDate] as? Date
+        try store.update { all in
+            let unchanged = all["sess-1"]
+            all["sess-1"] = unchanged
+        }
+        try store.put(pairing())      // the identical link again
+        let after = try FileManager.default
+            .attributesOfItem(atPath: paths.pairingsFile.path)[.modificationDate] as? Date
+        #expect(before == after)
+    }
+
+    /// A link made while a refresh was in flight used to be erased by it: the refresh had loaded the
+    /// file before the link existed and wrote that version back.
+    @Test("A link made during another thread's change is not erased by it")
+    func concurrentWritersDoNotLoseLinks() throws {
+        let paths = try Fixture.temporaryPaths()
+        defer { try? FileManager.default.removeItem(at: paths.root) }
+        let store = PairingStore(url: paths.pairingsFile)
+
+        DispatchQueue.concurrentPerform(iterations: 24) { index in
+            _ = try? store.put(pairing(session: "sess-\(index)", terminalID: "term-\(index)"))
+        }
+        #expect(store.load().count == 24)
+    }
+
     @Test("The file is private to this user")
     func storeIsPrivate() throws {
         let paths = try Fixture.temporaryPaths()
