@@ -5,6 +5,12 @@
 # Everything else in your settings file is copied through untouched, and a timestamped backup is
 # written first. A hook of yours that merely mentions aa-emit is not ours and is left alone.
 #
+# Also removes the power helper (needed for lid-closed roam) — asks for your password once,
+# releases any sleep block it is holding, then deletes the root:wheel paths install.sh created:
+# /Library/PrivilegedHelperTools/dev.agentwarden.powerd, /Library/LaunchDaemons/dev.agentwarden.
+# powerd.plist, and /Library/Application Support/dev.agentwarden/. Skipped, like the login item
+# and PATH links, when --settings names a non-default file.
+#
 # Usage:
 #   ./uninstall.sh                 remove hooks, stop the app, remove our login item if present
 #   ./uninstall.sh --dry-run       show what would be removed, change nothing
@@ -29,7 +35,7 @@ while [ $# -gt 0 ]; do
     --dry-run) DRY_RUN="--dry-run"; shift ;;
     --settings) SETTINGS="$2"; shift 2 ;;
     --purge) PURGE="yes"; shift ;;
-    -h|--help) sed -n '2,15p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,18p' "$0"; exit 0 ;;
     *) echo "unknown option: $1" >&2; exit 1 ;;
   esac
 done
@@ -60,7 +66,14 @@ fi
 # releases any sleep block before removing the daemon that would otherwise have cleared it.
 echo
 echo "== Power helper (needed for lid-closed roam) =="
-bash "$ROOT/Scripts/install-powerd.sh" uninstall || true
+# Captured, not swallowed: a failed teardown of a root daemon that clears a sleep block is
+# exactly the kind of failure that must not print "Done" and go quiet.
+if ! bash "$ROOT/Scripts/install-powerd.sh" uninstall; then
+  echo "WARNING: power helper uninstall reported a failure — see output above. The daemon," >&2
+  echo "         its files, or the sleep block it was holding may still be present. Re-run" >&2
+  echo "         ./Scripts/install-powerd.sh uninstall, or repair by hand:" >&2
+  echo "             sudo pmset -a disablesleep 0" >&2
+fi
 
 OWNERSHIP="$(/usr/bin/python3 "$ROOT/Scripts/launch-agent.py" check "$LAUNCH_AGENT" "$LAUNCH_LABEL" "$APP_BINARY")"
 if [ "$OWNERSHIP" = "ours" ]; then

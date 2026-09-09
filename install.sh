@@ -9,12 +9,21 @@
 #   3. ~/.local/bin/{aa-status,aa-emit,aa-bridge,aa-session} — symlinks, so the commands this
 #                                 project documents can actually be typed. Only ever created where
 #                                 nothing else is in the way; see --no-path to skip entirely.
-#   4. Nothing else. No login item unless you pass --login-item.
+#   4. The power helper (needed for lid-closed roam) — asks for your password once, then writes,
+#                                 all root:wheel and outside every user-writable path:
+#                                   /Library/PrivilegedHelperTools/dev.agentwarden.powerd
+#                                   /Library/LaunchDaemons/dev.agentwarden.powerd.plist  (loaded)
+#                                   /Library/Application Support/dev.agentwarden/  (+ allowed-uid)
+#                                 Skipped when --settings names a non-default file — see below.
+#                                 Removed by ./uninstall.sh, releasing any sleep block first.
+#   5. Nothing else. No login item unless you pass --login-item.
 #
 # Usage:
 #   ./install.sh                 build if needed, back up, wire hooks, link the CLI, offer to launch
 #   ./install.sh --dry-run       show the resulting hooks block, change nothing
-#   ./install.sh --settings PATH target a project settings file instead of the user one
+#   ./install.sh --settings PATH target a project settings file instead of the user one — also
+#                                 skips the power helper and the login item, both user-level and
+#                                 not tied to any particular settings file
 #   ./install.sh --login-item    also start the app at login (opt-in, off by default)
 #   ./install.sh --no-launch     wire the hooks but do not start the app now
 #   ./install.sh --link-dir DIR  put the command symlinks somewhere else (default ~/.local/bin)
@@ -31,7 +40,8 @@ LAUNCH_AGENT="$HOME/Library/LaunchAgents/dev.agentwarden.plist"
 LAUNCH_LABEL="dev.agentwarden"
 POWERD_LABEL="dev.agentwarden.powerd"
 
-SETTINGS="$HOME/.claude/settings.json"
+DEFAULT_SETTINGS="$HOME/.claude/settings.json"
+SETTINGS="$DEFAULT_SETTINGS"
 DRY_RUN=""
 LOGIN_ITEM=""
 LAUNCH="yes"
@@ -49,12 +59,12 @@ while [ $# -gt 0 ]; do
     --no-launch) LAUNCH=""; shift ;;
     --link-dir) LINK_DIR="$2"; shift 2 ;;
     --no-path) LINK_PATH=""; shift ;;
-    -h|--help) sed -n '2,27p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,30p' "$0"; exit 0 ;;
     *) echo "unknown option: $1" >&2; exit 1 ;;
   esac
 done
 
-if [ ! -x "$EMIT" ]; then
+if [ ! -x "$EMIT" ] || [ ! -x "$APP/Contents/MacOS/aa-powerd" ]; then
   echo "Building the app first…"
   AGENT_WARDEN_NO_AUTO_INSTALL=1 "$ROOT/Scripts/build-app.sh" release
 fi
@@ -64,7 +74,13 @@ echo "== Wiring Claude Code hooks =="
 
 echo
 echo "== Power helper (needed for lid-closed roam) =="
-if [ -n "$DRY_RUN" ]; then
+# Machine-level, like the login item and PATH links below: not tied to whichever settings file
+# was named above. Mirrors uninstall.sh's guard so a project-scoped --settings can never install
+# a root daemon that the matching uninstall would then refuse to remove.
+if [ "$SETTINGS" != "$DEFAULT_SETTINGS" ]; then
+  echo "note: --settings names a file other than the user one, so the power helper is left"
+  echo "      alone. Run without --settings to install it too."
+elif [ -n "$DRY_RUN" ]; then
   echo "would install $POWERD_LABEL from $APP/Contents/MacOS/aa-powerd"
 else
   bash "$ROOT/Scripts/install-powerd.sh" install "$APP/Contents/MacOS/aa-powerd"

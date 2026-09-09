@@ -29,12 +29,20 @@ case "${1:-}" in
 install)
   SRC="${2:?usage: install-powerd.sh install <path-to-aa-powerd>}"
   [ -x "$SRC" ] || { echo "not executable: $SRC" >&2; exit 1; }
+  [ -f "$TEMPLATE" ] || { echo "missing plist template: $TEMPLATE" >&2; exit 1; }
   UID_NUM="$(id -u)"
 
   echo "Installing the power helper. This needs your password once."
-  sudo mkdir -p /Library/PrivilegedHelperTools "$SUPPORT"
-  sudo chown root:wheel /Library/PrivilegedHelperTools "$SUPPORT"
-  sudo chmod 755 /Library/PrivilegedHelperTools
+  # /Library/PrivilegedHelperTools ships as a shared Apple directory (mode 1755, sticky bit
+  # set) and, on many Macs, already holds other vendors' privileged helpers. Created only
+  # when absent, with the mode baked into the mkdir itself — never chmod'd afterwards — so
+  # an existing directory's sticky bit is never silently downgraded to 0755.
+  if [ ! -d /Library/PrivilegedHelperTools ]; then
+    sudo mkdir -p -m 755 /Library/PrivilegedHelperTools
+    sudo chown root:wheel /Library/PrivilegedHelperTools
+  fi
+  sudo mkdir -p "$SUPPORT"
+  sudo chown root:wheel "$SUPPORT"
   sudo chmod 700 "$SUPPORT"
 
   # Atomic replace, then ownership, then load — never the other way round.
@@ -47,7 +55,21 @@ install)
   sudo chown root:wheel "$SUPPORT/allowed-uid"
   sudo chmod 600 "$SUPPORT/allowed-uid"
 
-  sed "s/__UID__/$UID_NUM/" "$TEMPLATE" | sudo tee "$PLIST" >/dev/null
+  # Rendered and checked in full before root ever sees it. `launchctl bootstrap` on an
+  # invalid plist would leave the root binary installed with no working daemon behind it,
+  # so nothing is written to /Library/LaunchDaemons until the render passes `plutil -lint`
+  # and the two strings that are a contract with the daemon binary — Program and
+  # SockPathName — are confirmed to say exactly what this script itself just installed.
+  RENDERED="$(mktemp)"
+  trap 'rm -f "$RENDERED"' EXIT
+  sed "s/__UID__/$UID_NUM/" "$TEMPLATE" > "$RENDERED"
+  plutil -lint "$RENDERED" >/dev/null || { echo "rendered plist failed plutil -lint: $RENDERED" >&2; exit 1; }
+  RENDERED_PROGRAM="$(plutil -extract Program raw "$RENDERED")"
+  RENDERED_SOCKET="$(plutil -extract Sockets.PowerdSocket.SockPathName raw "$RENDERED")"
+  [ "$RENDERED_PROGRAM" = "$HELPER" ] || { echo "rendered plist Program ($RENDERED_PROGRAM) != $HELPER" >&2; exit 1; }
+  [ "$RENDERED_SOCKET" = "$SOCKET" ] || { echo "rendered plist SockPathName ($RENDERED_SOCKET) != $SOCKET" >&2; exit 1; }
+
+  sudo cp "$RENDERED" "$PLIST"
   sudo chown root:wheel "$PLIST"
   sudo chmod 644 "$PLIST"
 
@@ -60,6 +82,18 @@ install)
   ;;
 uninstall)
   echo "Removing the power helper. This needs your password once."
+  # Runs no matter how this branch ends — clean completion, a failed sudo call under
+  # set -e, or a declined password prompt — so the one warning built to catch a stranded
+  # sleep block is never skipped in exactly the case it exists to catch.
+  warn_if_sleep_disabled() {
+    local state
+    state="$(pmset -g | awk '/SleepDisabled/ {print $2}')"
+    if [ "$state" != "0" ]; then
+      echo "WARNING: SleepDisabled is still set. Run: sudo pmset -a disablesleep 0" >&2
+    fi
+  }
+  trap warn_if_sleep_disabled EXIT
+
   # Release before removing the thing that would have released it.
   sudo launchctl bootout system/"$LABEL" 2>/dev/null || true
   sudo pmset -a disablesleep 0 || true
@@ -67,9 +101,6 @@ uninstall)
   # user-writable and would otherwise be a root-deletion primitive.
   sudo rm -f "$HELPER" "$PLIST" "$SUPPORT/allowed-uid" "$SUPPORT/held" "$SOCKET"
   sudo rmdir "$SUPPORT" 2>/dev/null || true
-  if [ "$(pmset -g | awk '/SleepDisabled/ {print $2}')" != "0" ]; then
-    echo "WARNING: SleepDisabled is still set. Run: sudo pmset -a disablesleep 0" >&2
-  fi
   echo "Removed."
   ;;
 *)
