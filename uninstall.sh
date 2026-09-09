@@ -5,11 +5,15 @@
 # Everything else in your settings file is copied through untouched, and a timestamped backup is
 # written first. A hook of yours that merely mentions aa-emit is not ours and is left alone.
 #
+# Also restores statusLine.command to whatever it was before install.sh touched it (from
+# install-manifest.json) and removes ~/.claude/bin/agent-warden-statusline.sh. Refuses, rather
+# than guessing, if statusLine.command has since changed to something install.sh did not write.
+#
 # Also removes the power helper (needed for lid-closed roam) — asks for your password once,
 # releases any sleep block it is holding, then deletes the root:wheel paths install.sh created:
 # /Library/PrivilegedHelperTools/dev.agentwarden.powerd, /Library/LaunchDaemons/dev.agentwarden.
-# powerd.plist, and /Library/Application Support/dev.agentwarden/. Skipped, like the login item
-# and PATH links, when --settings names a non-default file.
+# powerd.plist, and /Library/Application Support/dev.agentwarden/. Skipped, like the login item,
+# PATH links and the status line, when --settings names a non-default file.
 #
 # Usage:
 #   ./uninstall.sh                 remove hooks, stop the app, remove our login item if present
@@ -74,6 +78,14 @@ if ! bash "$ROOT/Scripts/install-powerd.sh" uninstall; then
   echo "         ./Scripts/install-powerd.sh uninstall, or repair by hand:" >&2
   echo "             sudo pmset -a disablesleep 0" >&2
 fi
+
+# Same guard shape as the power helper above, and reached only once that guard and the earlier
+# --dry-run exit have already confirmed SETTINGS is the real user file and this is not a preview
+# run — so this call always writes. Restores statusLine.command to whatever it was before install.sh
+# touched it (recorded in install-manifest.json at install time) and removes our wrapper file.
+echo
+echo "== Removing the Claude Code status line =="
+/usr/bin/python3 "$ROOT/Scripts/manage-statusline.py" uninstall --settings "$SETTINGS" --write
 
 OWNERSHIP="$(/usr/bin/python3 "$ROOT/Scripts/launch-agent.py" check "$LAUNCH_AGENT" "$LAUNCH_LABEL" "$APP_BINARY")"
 if [ "$OWNERSHIP" = "ours" ]; then

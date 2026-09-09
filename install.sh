@@ -9,14 +9,22 @@
 #   3. ~/.local/bin/{aa-status,aa-emit,aa-bridge,aa-session,aa-roam} — symlinks, so the commands this
 #                                 project documents can actually be typed. Only ever created where
 #                                 nothing else is in the way; see --no-path to skip entirely.
-#   4. The power helper (needed for lid-closed roam) — asks for your password once, then writes,
+#   4. ~/.claude/bin/agent-warden-statusline.sh and statusLine.command in ~/.claude/settings.json —
+#                                 takes over the 🎒 roam indicator segment of your status line. If a
+#                                 claude-code-roam wrapper is already installed, every other segment
+#                                 it chains (your own status line, any hand-added block) is carried
+#                                 over verbatim; only the roam-plugin's own indicator line is
+#                                 replaced. A timestamped settings.json backup is made first, and the
+#                                 previous statusLine is recorded so uninstall.sh restores it exactly.
+#                                 Skipped when --settings names a non-default file — see below.
+#   5. The power helper (needed for lid-closed roam) — asks for your password once, then writes,
 #                                 all root:wheel and outside every user-writable path:
 #                                   /Library/PrivilegedHelperTools/dev.agentwarden.powerd
 #                                   /Library/LaunchDaemons/dev.agentwarden.powerd.plist  (loaded)
 #                                   /Library/Application Support/dev.agentwarden/  (+ allowed-uid)
 #                                 Skipped when --settings names a non-default file — see below.
 #                                 Removed by ./uninstall.sh, releasing any sleep block first.
-#   5. Nothing else. No login item unless you pass --login-item.
+#   6. Nothing else. No login item unless you pass --login-item.
 #
 # Usage:
 #   ./install.sh                 build if needed, back up, wire hooks, link the CLI, offer to launch
@@ -36,6 +44,7 @@ APP="$ROOT/build/AgentWarden.app"
 APP_BINARY="$APP/Contents/MacOS/AgentWarden"
 EMIT="$APP/Contents/MacOS/aa-emit"
 STATUS="$APP/Contents/MacOS/aa-status"
+ROAM_BIN="$APP/Contents/MacOS/aa-roam"
 LAUNCH_AGENT="$HOME/Library/LaunchAgents/dev.agentwarden.plist"
 LAUNCH_LABEL="dev.agentwarden"
 POWERD_LABEL="dev.agentwarden.powerd"
@@ -64,13 +73,30 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-if [ ! -x "$EMIT" ] || [ ! -x "$APP/Contents/MacOS/aa-powerd" ]; then
+if [ ! -x "$EMIT" ] || [ ! -x "$APP/Contents/MacOS/aa-powerd" ] || [ ! -x "$ROAM_BIN" ]; then
   echo "Building the app first…"
   AGENT_WARDEN_NO_AUTO_INSTALL=1 "$ROOT/Scripts/build-app.sh" release
 fi
 
 echo "== Wiring Claude Code hooks =="
 /usr/bin/python3 "$ROOT/Scripts/manage-hooks.py" install --settings "$SETTINGS" --emit-path "$EMIT" $DRY_RUN
+
+echo
+echo "== Claude Code status line =="
+# statusLine.command in a settings file is a real, project-scoped setting (like hooks above) --
+# but the file this writes it to point at, ~/.claude/bin/agent-warden-statusline.sh, is not: it is
+# one fixed real-filesystem path, same for every settings file. Migrating it while --settings names
+# a project or test file would still touch that one real path, which is not what a project-scoped
+# --settings run is asking for -- so this is guarded exactly like the power helper below, not like
+# the hooks step above.
+if [ "$SETTINGS" != "$DEFAULT_SETTINGS" ]; then
+  echo "note: --settings names a file other than the user one, so the status line is left"
+  echo "      alone. Run without --settings to migrate it too."
+elif [ -n "$DRY_RUN" ]; then
+  /usr/bin/python3 "$ROOT/Scripts/manage-statusline.py" install --settings "$SETTINGS" --roam-bin "$ROAM_BIN" --dry-run
+else
+  /usr/bin/python3 "$ROOT/Scripts/manage-statusline.py" install --settings "$SETTINGS" --roam-bin "$ROAM_BIN" --write
+fi
 
 echo
 echo "== Power helper (needed for lid-closed roam) =="
