@@ -55,15 +55,6 @@ public enum BridgeRequest: Codable, Sendable, Equatable {
     case stop(sessionID: String)
     /// Bring a visible session's own terminal to the front. Only a surface this host created.
     case focus(sessionID: String)
-    /// Ask the running app to enter roam — the lid-closed keep-awake session.
-    ///
-    /// Unlike every verb above, this is not about a session this host started: it is answered by
-    /// a host running *inside* Agent Warden itself, which is the only thing that can actually hold
-    /// roam open (see `aa-roam`'s own doc for why a short-lived caller cannot). A bare
-    /// `aa-bridge serve`, which owns no `RoamService`, refuses it with `.unsupported`.
-    case roamOn
-    /// Ask the running app to leave roam. A no-op, reported as such, when roam was already off.
-    case roamOff
 
     public struct StartRequest: Codable, Sendable, Equatable {
         /// Caller-chosen id, so a retry cannot start two sessions. Reusing it with *different*
@@ -132,15 +123,11 @@ public struct BridgeResponse: Codable, Sendable, Equatable {
     public var moreAvailable: Bool?
     public var nextAfter: Int?
     public var version: Int
-    /// A plain sentence for a verb that has nothing structured to report. Only `roamOn` and
-    /// `roamOff` set it today — every session verb answers through `session`/`sessions` instead,
-    /// which is why this is a separate field rather than an overload of an existing one.
-    public var message: String?
 
     public init(ok: Bool, error: BridgeError? = nil, session: BridgeSessionState? = nil,
                 sessions: [BridgeSessionState]? = nil, events: [BridgeEvent]? = nil,
                 droppedBefore: Int? = nil, moreAvailable: Bool? = nil, nextAfter: Int? = nil,
-                version: Int = BridgeProtocol.version, message: String? = nil) {
+                version: Int = BridgeProtocol.version) {
         self.ok = ok
         self.error = error
         self.session = session
@@ -150,7 +137,6 @@ public struct BridgeResponse: Codable, Sendable, Equatable {
         self.moreAvailable = moreAvailable
         self.nextAfter = nextAfter
         self.version = version
-        self.message = message
     }
 }
 
@@ -177,15 +163,6 @@ public struct BridgeError: Codable, Sendable, Equatable, Error {
         /// Claude Code refused a permission and the host has no way to answer it.
         case permissionUnsupported
         case unknownRequest
-        /// This host has no capability to do what was asked, at all — not a policy refusal, a
-        /// missing one. `roamOn`/`roamOff` answered by a host with no `RoamBridgeControlling`
-        /// (a bare `aa-bridge serve`, which holds no `RoamService`) land here.
-        case unsupported
-        /// The request was understood and could be answered, and the answer is no. The message
-        /// says why. Kept apart from `clientUnavailable`, which names a *process* that is gone:
-        /// this is a decision made by something that is very much present — the battery guard
-        /// refusing roam, or the power daemon refusing a foreign or busy lease.
-        case refused
     }
 
     public init(code: Code, message: String) {
