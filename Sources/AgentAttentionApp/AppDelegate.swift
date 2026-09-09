@@ -28,6 +28,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Keeps the name and the ⌘N number on each row matching what the tab bar actually says. See
     /// `TabTitleService` for why a title has to be re-read rather than remembered.
     private let tabTitles: TabTitleService
+    /// Roam: the lid-closed session. Driven from the sweep below and from nothing else — see
+    /// `RoamService` for why every call to the power daemon leaves this thread to make it.
+    private let roam: RoamService
     private lazy var pairingWindow = PairingWindow()
     /// The last completed registry scan, kept so the status interface can report its freshness.
     private var lastDiscovery: DiscoveryReport?
@@ -52,6 +55,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         pairings = PairingStore(url: paths.pairingsFile)
         autoLinker = TabAutoLinker(ghostty: GhosttyAdapter(), pairings: pairings)
         tabTitles = TabTitleService(ghostty: GhosttyAdapter(), pairings: pairings)
+        roam = RoamService(paths: paths)
         config = AttentionConfig.load(from: paths.configFile)
         bubble = BubbleController(size: CGFloat(config.bubbleSize))
         engine = AttentionEngine(
@@ -62,6 +66,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         )
         super.init()
         tabTitles.onChange = { [weak self] in self?.render() }
+        // Roam changing state is a redraw like any other — including the one nobody asked for,
+        // where the lease is lost and the next lid close will sleep the machine.
+        roam.onChange = { [weak self] in self?.render() }
+        // What roam has to say goes out the way this app already says things: the panel's status
+        // line, and the log. There is no second notification mechanism here and no OS banner —
+        // this app has never posted one. Twenty seconds rather than the default six because
+        // these sentences carry a command to type when something needs repairing.
+        roam.onNotice = { [weak self] message in self?.panel.flash(message, seconds: 20) }
+        roam.log = { [weak self] message in self?.log(message) }
         speech.isEnabled = config.speechIsAudible
         speech.voiceIdentifier = config.speechVoiceIdentifier
         chime.isEnabled = config.chimeIsAudible
@@ -88,6 +101,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             try? config.save(to: paths.configFile)
             configModifiedAt = fileModificationDate(paths.configFile)
         }
+        // A roam.json from a previous run describes a session that ended with that process.
+        // Re-entering roam disables the machine's sleep, and that happens because somebody asks.
+        roam.discardStaleState()
         installStatusItem()
         wireBubble()
         wirePanelCallbacks()
@@ -139,6 +155,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Leaving a stale presence file behind would make `aa-status` report a monitor that is not
         // there. The pid check would catch it, but saying nothing is cleaner than saying wrong.
         store.clearAppStatus()
+        // Roam does not outlive the app that is holding it: the assertion and the activity token
+        // are given back here, and the daemon drops the lease as this process's socket closes.
+        roam.shutdown()
         spoolWatcher?.stop()
         sessionWatcher?.stop()
         outsideClicks.stop()
@@ -216,6 +235,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         announce(effects)
         render()
+
+        // The battery guard, on the existing sweep and on no timer of its own. Asked only while
+        // roam is on: reading power sources is cheap, but there is nothing to decide when roam is
+        // off, and this runs every `sweepIntervalSeconds` for as long as the app is up.
+        if roam.isActive {
+            roam.tick(reading: PowerProbe.read(), threshold: config.roamBatteryThreshold)
+        }
 
         // One handshake per tick, off this thread: it takes the script gate and waits on a
         // terminal, and neither belongs on the thread that draws the queue. A tick that finds

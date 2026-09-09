@@ -28,6 +28,15 @@ public enum PowerError: String, Sendable, Equatable {
     case assertionFailed
 }
 
+/// `PowerError` is a wire vocabulary first — the daemon carries these as replies rather than
+/// throwing them, which is why the enum itself declares only `String, Sendable, Equatable`.
+///
+/// The conformance lives here, next to the type, because it is a property of the type and not
+/// of any one consumer. Every client that presents `Result<Void, PowerError>` needs it, and a
+/// retroactive conformance declared in one client would have to be duplicated by the next —
+/// two conformances for one type being exactly the situation to avoid.
+extension PowerError: Error {}
+
 /// What the app may ask the root daemon to do. Deliberately five verbs and no arguments
 /// beyond a version integer: the daemon runs as root, and every byte it accepts from a
 /// socket is attack surface. Nothing here is ever interpolated into a command.

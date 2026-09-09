@@ -1,22 +1,6 @@
 import Foundation
 import AgentAttentionCore
 
-/// `PowerError` is declared in Core as a plain `String`-raw-valued enum, with no `Error`
-/// conformance — nothing in Core needs one, because the daemon carries errors as replies on
-/// a wire rather than throwing them. `Result<Void, PowerError>`, which is the interface this
-/// client is specified to present, requires it, so it is declared here.
-///
-/// **Deliberately additive and deliberately not a Core edit.** Conformance is all that is
-/// missing; there is no behaviour to add. Putting it in Core would be the tidier home, and
-/// that is the right place for it if roam ever grows a second consumer — this is the one
-/// thing in this file that a later task may want to move up. Left here for now because the
-/// alternative is editing a reviewed protocol file to satisfy one call site.
-///
-/// If Core ever declares `Error` itself, this line stops compiling rather than silently
-/// disagreeing — which is the failure mode to want, since two conformances for one type is
-/// the thing that produces undefined behaviour at runtime.
-extension PowerError: Error {}
-
 /// The app's end of the power lease: one long-lived connection to the root daemon that
 /// holds the machine's lid-close sleep block for as long as somebody is roaming.
 ///

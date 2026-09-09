@@ -263,4 +263,47 @@ struct AttentionCertaintyTests {
                 at: clock.now, ttl: AttentionConfig.default.backgroundEvidenceTTLSeconds).rawValue)
         }
     }
+
+    /// An existing config.json predates every roam key. It must still load, with roam off by
+    /// default in the only sense that matters: sane thresholds, and no invented SSID.
+    @Test("Roam settings default safely and an older config still loads")
+    func roamDefaults() throws {
+        let config = AttentionConfig.default
+        #expect(config.roamBatteryThreshold == 10)
+        #expect(config.roamHotspotSSID == nil)
+        #expect(config.roamNudgeEnabled)
+        #expect(config.roamNudgeSnoozeMinutes == 15)
+
+        let old = Data(#"{"soundEnabled": true}"#.utf8)
+        let decoded = try JSONCoding.decoder.decode(AttentionConfig.self, from: old)
+        #expect(decoded.roamBatteryThreshold == 10)
+        #expect(decoded.roamHotspotSSID == nil)
+        #expect(decoded.roamNudgeEnabled)
+        #expect(decoded.roamNudgeSnoozeMinutes == 15)
+        #expect(decoded.soundEnabled, "the one key the old file did carry is still honoured")
+    }
+
+    /// A hand-edited threshold outside the policy's range must not silently disable the battery
+    /// guard: `RoamPolicy.guardAction` answers `.none` to one, so an unclamped 0 would leave a
+    /// roaming Mac with nothing watching the battery. An empty SSID is not a choice of network.
+    @Test("Roam settings are clamped to something the guard can actually run at")
+    func roamSettingsAreClamped() throws {
+        let mangled = Data(#"""
+        {"roamBatteryThreshold": 0, "roamNudgeSnoozeMinutes": 0, "roamHotspotSSID": "  "}
+        """#.utf8)
+        let loaded = try JSONCoding.decoder.decode(AttentionConfig.self, from: mangled).validated()
+
+        #expect(RoamPolicy.thresholdRange.contains(loaded.roamBatteryThreshold))
+        #expect(loaded.roamBatteryThreshold == RoamPolicy.thresholdRange.lowerBound)
+        #expect(loaded.roamNudgeSnoozeMinutes == AttentionConfig.roamNudgeSnoozeRange.lowerBound)
+        #expect(loaded.roamHotspotSSID == nil, "whitespace is not the name of a network")
+
+        let absurd = Data(#"{"roamBatteryThreshold": 200, "roamNudgeSnoozeMinutes": 99999}"#.utf8)
+        let capped = try JSONCoding.decoder.decode(AttentionConfig.self, from: absurd).validated()
+        #expect(capped.roamBatteryThreshold == RoamPolicy.thresholdRange.upperBound)
+        #expect(capped.roamNudgeSnoozeMinutes == AttentionConfig.roamNudgeSnoozeRange.upperBound)
+
+        // The clamp must be a no-op on the shipped defaults, or the defaults are wrong.
+        #expect(AttentionConfig.default.validated() == AttentionConfig.default)
+    }
 }

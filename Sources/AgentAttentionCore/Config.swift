@@ -66,6 +66,41 @@ public struct AttentionConfig: Codable, Sendable, Equatable {
     public var bubblePlacement: BubblePlacement
     /// Diameter in points.
     public var bubbleSize: Double
+    /// Percent at which roam ends itself and the machine sleeps deliberately.
+    ///
+    /// Ten rather than the bottom of `RoamPolicy.thresholdRange`, because the guard is not
+    /// instantaneous: it is only consulted once per sweep (`sweepIntervalSeconds`, 15 by
+    /// default), and what follows the decision is a lease release the daemon has to confirm and
+    /// a system sleep the machine has to carry out. A threshold at the floor would leave no
+    /// margin for a sweep that noticed a moment late, and none for reopening the lid afterwards.
+    /// Clamped to `RoamPolicy.thresholdRange` in `validated()`.
+    public var roamBatteryThreshold: Int
+    /// The network you expect to be on while roaming. Best-effort: a warning, never a block.
+    ///
+    /// `nil` until somebody names one — there is no sensible guess, and an invented SSID would
+    /// produce a warning about a network the user never chose. Best-effort because `RoamNetwork`
+    /// classifies on the gateway address rather than the name: SSID access is privacy-gated on
+    /// modern macOS, so an unreadable name makes the warning vaguer and never wrong.
+    public var roamHotspotSSID: String?
+    /// The "you seem to be at the desk — still need roam?" prompt.
+    ///
+    /// On by default, which is safe because `NudgePolicy` requires three signals at once — lid
+    /// open, recent typing, and roam settled — before it asks anything. A prompt that rarely
+    /// fires is one people read; one that fires on a single signal is one they learn to dismiss.
+    public var roamNudgeEnabled: Bool
+    /// How long a dismissed nudge stays quiet.
+    ///
+    /// Fifteen minutes: long enough that answering "no, keep roaming" is not asked again during
+    /// the same errand, short enough that a roam session left on for an afternoon is asked more
+    /// than once. Clamped in `validated()` to stay a snooze rather than an off switch, which
+    /// `roamNudgeEnabled` already is.
+    public var roamNudgeSnoozeMinutes: Int
+
+    /// How long a dismissed roam nudge may stay quiet. The floor is 1 because 0 minutes would
+    /// make dismissing the prompt a no-op — it would return on the very next sweep. The ceiling
+    /// is a day because anything longer outlives any plausible roam session, at which point it
+    /// is not a snooze but a way of turning the prompt off without saying so.
+    public static let roamNudgeSnoozeRange = 1...1440
 
     public static let `default` = AttentionConfig(
         stallThresholdSeconds: 300,
@@ -87,7 +122,11 @@ public struct AttentionConfig: Codable, Sendable, Equatable {
         backgroundEvidenceTTLSeconds: 30 * 60,
         bubbleEnabled: true,
         bubblePlacement: .default,
-        bubbleSize: 56
+        bubbleSize: 56,
+        roamBatteryThreshold: 10,
+        roamHotspotSSID: nil,
+        roamNudgeEnabled: true,
+        roamNudgeSnoozeMinutes: 15
     )
 
     public init(
@@ -110,7 +149,13 @@ public struct AttentionConfig: Codable, Sendable, Equatable {
         backgroundEvidenceTTLSeconds: TimeInterval,
         bubbleEnabled: Bool,
         bubblePlacement: BubblePlacement,
-        bubbleSize: Double
+        bubbleSize: Double,
+        // Defaulted, like `chimeEnabled` and `orchestrationContractPath` before them, so every
+        // existing call site still compiles without naming a roam setting it knows nothing about.
+        roamBatteryThreshold: Int = 10,
+        roamHotspotSSID: String? = nil,
+        roamNudgeEnabled: Bool = true,
+        roamNudgeSnoozeMinutes: Int = 15
     ) {
         self.stallThresholdSeconds = stallThresholdSeconds
         self.snoozeDurationSeconds = snoozeDurationSeconds
@@ -132,6 +177,10 @@ public struct AttentionConfig: Codable, Sendable, Equatable {
         self.bubbleEnabled = bubbleEnabled
         self.bubblePlacement = bubblePlacement
         self.bubbleSize = bubbleSize
+        self.roamBatteryThreshold = roamBatteryThreshold
+        self.roamHotspotSSID = roamHotspotSSID
+        self.roamNudgeEnabled = roamNudgeEnabled
+        self.roamNudgeSnoozeMinutes = roamNudgeSnoozeMinutes
     }
 
     /// Bounds every value to something the app can run at. Applied on load, on every config
@@ -157,7 +206,25 @@ public struct AttentionConfig: Codable, Sendable, Equatable {
         // geometry clamps too, but a sane stored value keeps the menu and the config honest.
         copy.bubblePlacement.offsetX = clamp(bubblePlacement.offsetX, 0, 8000, d.bubblePlacement.offsetX)
         copy.bubblePlacement.offsetY = clamp(bubblePlacement.offsetY, 0, 8000, d.bubblePlacement.offsetY)
+        // Clamped to the policy's own declared range, so the file and the policy cannot disagree
+        // about what a usable threshold is. It matters which way this goes: `RoamPolicy` answers
+        // `.none` to a threshold outside the range, so a hand-edited 0 would leave a roaming Mac
+        // with no battery guard at all — silently, and only at the moment it was needed. Clamping
+        // turns a typo into a working guard. The policy's own range check stays as it is, for any
+        // caller that never passes through here.
+        copy.roamBatteryThreshold = Swift.min(Swift.max(roamBatteryThreshold,
+                                                        RoamPolicy.thresholdRange.lowerBound),
+                                              RoamPolicy.thresholdRange.upperBound)
+        copy.roamNudgeSnoozeMinutes = Swift.min(Swift.max(roamNudgeSnoozeMinutes,
+                                                          AttentionConfig.roamNudgeSnoozeRange.lowerBound),
+                                                AttentionConfig.roamNudgeSnoozeRange.upperBound)
         if let voice = copy.speechVoiceIdentifier, voice.isEmpty { copy.speechVoiceIdentifier = nil }
+        // An empty SSID is not a choice of network, for the same reason an empty voice identifier
+        // is not a choice of voice: stored as absent, so "none named" has one representation.
+        if let ssid = copy.roamHotspotSSID,
+           ssid.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            copy.roamHotspotSSID = nil
+        }
         // An empty string is not a selection. Stored as absent, so "nothing chosen" has one
         // representation rather than two that behave differently.
         if let contract = copy.orchestrationContractPath,
@@ -198,6 +265,14 @@ public struct AttentionConfig: Codable, Sendable, Equatable {
         bubbleEnabled = flag(.bubbleEnabled, d.bubbleEnabled)
         bubblePlacement = ((try? c.decodeIfPresent(BubblePlacement.self, forKey: .bubblePlacement)) ?? nil) ?? d.bubblePlacement
         bubbleSize = num(.bubbleSize, d.bubbleSize)
+        // Every config.json written before roam existed is missing all four of these keys, and
+        // reads here as the defaults — the same rule every field above follows.
+        roamBatteryThreshold =
+            ((try? c.decodeIfPresent(Int.self, forKey: .roamBatteryThreshold)) ?? nil) ?? d.roamBatteryThreshold
+        roamHotspotSSID = (try? c.decodeIfPresent(String.self, forKey: .roamHotspotSSID)) ?? nil
+        roamNudgeEnabled = flag(.roamNudgeEnabled, d.roamNudgeEnabled)
+        roamNudgeSnoozeMinutes =
+            ((try? c.decodeIfPresent(Int.self, forKey: .roamNudgeSnoozeMinutes)) ?? nil) ?? d.roamNudgeSnoozeMinutes
     }
 }
 
