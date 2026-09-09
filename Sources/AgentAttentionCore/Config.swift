@@ -201,7 +201,6 @@ public struct AttentionConfig: Codable, Sendable, Equatable {
         // geometry clamps too, but a sane stored value keeps the menu and the config honest.
         copy.bubblePlacement.offsetX = clamp(bubblePlacement.offsetX, 0, 8000, d.bubblePlacement.offsetX)
         copy.bubblePlacement.offsetY = clamp(bubblePlacement.offsetY, 0, 8000, d.bubblePlacement.offsetY)
-        // Clamped to the policy's own declared range, so the file and the policy cannot disagree
         // **Fallback, not a clamp, and the difference is the whole point.** A threshold outside
         // `RoamPolicy.thresholdRange` is a typo, and the two ends fail in opposite directions:
         // `RoamPolicy` answers `.none` to a hand-edited 0, leaving a roaming Mac with no battery
