@@ -25,6 +25,17 @@ enum RoamEntry: Equatable {
     case refused(PowerError)
 }
 
+/// What happened when roam was asked to leave. See `RoamService.exit()`.
+enum RoamExit: Equatable {
+    /// The assertion is released and `roam.json` is gone. Reported this way whether roam was
+    /// actually on or already off — a caller asking to leave wanted "not on", and that is true
+    /// either way, so there is nothing gained by telling the two apart.
+    case exited
+    /// `enter` was still waiting on the daemon, so there was nothing to tear down yet. The exit
+    /// is remembered (`pendingExit`) and happens the moment that acquire lands.
+    case pending
+}
+
 /// Roam, from the app's side: enter it, leave it, and end it before the battery does.
 ///
 /// Everything *decidable* lives in `AgentAttentionCore` and is unit-tested without root, a
@@ -256,7 +267,15 @@ final class RoamService {
     /// giving the lease back takes a socket round trip, and for those seconds a `roam.json`
     /// saying roam is on would be telling a status reader the machine is protected while the
     /// block is being dropped. The other order is the dangerous one.
-    func exit() {
+    ///
+    /// - Returns: `.exited` once the assertion is released and `roam.json` is gone — true whether
+    ///   roam was actually on or already off, since either way "not on" is now the fact. `.pending`
+    ///   when there was nothing to tear down *yet* because `enter` was still out; see
+    ///   `pendingExit`. The menu's own `toggleRoam` ignores this (`@discardableResult`) because a
+    ///   click has nothing further to say either way, but Task 14's bridge-driven `roamOff` needs
+    ///   it to answer a CLI caller truthfully rather than always claiming "roam off".
+    @discardableResult
+    func exit() -> RoamExit {
         switch phase {
         case .entering:
             // Roam is not on yet, so there is nothing to tear down — but there will be in a
@@ -267,13 +286,13 @@ final class RoamService {
             log("roam: exit requested while the lease is being taken — it will be honoured "
                 + "as soon as that lands")
             onChange?()
-            return
+            return .pending
         case .leaving:
-            return                      // already going; `state` was cleared before the request
+            return .exited              // already going; `state` was cleared before the request
         case .idle:
             break
         }
-        guard state != nil else { return }
+        guard state != nil else { return .exited }   // already off
         phase = .leaving
         assertion.release()
         endActivity()
@@ -298,6 +317,7 @@ final class RoamService {
                 self.onChange?()
             }
         }
+        return .exited
     }
 
     /// The app is quitting.

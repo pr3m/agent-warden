@@ -58,6 +58,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var spoolWatcher: DirectoryWatcher?
     private var sessionWatcher: DirectoryWatcher?
     private var timer: Timer?
+    /// Answers `aa-roam on`/`off`. This is the only local socket Agent Warden itself listens on —
+    /// `aa-bridge` is a separate, opt-in process for driving Claude Code sessions, and this host
+    /// carries none of that capability (`approvedRoots: []` below refuses every `start`). It
+    /// exists because a short-lived CLI process cannot hold roam open itself: see `aa-roam`'s own
+    /// doc, and `RoamBridgeControlling`'s, for why the request has to reach a long-lived process.
+    private var roamControlServer: BridgeSocketServer?
 
     override init() {
         paths = AppPaths.resolved()
@@ -121,7 +127,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         // A roam.json from a previous run describes a session that ended with that process.
         // Re-entering roam disables the machine's sleep, and that happens because somebody asks.
+        //
+        // Read-during-startup is safe without any ordering against `discardStaleState` below:
+        // a reader validates the file through `RoamState.isLive`, which checks the *recorded
+        // owner process*, not the file's mere presence. A `roam.json` left by a crashed run
+        // names a process that is already gone (that is what let `SingleInstance` allow this
+        // launch at all), so `isLive` reads false whether or not this line has run yet — and
+        // this instance cannot write a *fresh* file before this point, because nothing here
+        // calls `enter` until a menu click or `aa-roam on` asks for it, both of which are well
+        // after this line. So there is no window in which a live session's file could be seen
+        // as stale, only one in which an already-stale one is (correctly) seen as stale sooner.
         roam.discardStaleState()
+        startRoamControlServer()
         installStatusItem()
         wireBubble()
         wirePanelCallbacks()
@@ -176,6 +193,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Roam does not outlive the app that is holding it: the assertion and the activity token
         // are given back here, and the daemon drops the lease as this process's socket closes.
         roam.shutdown()
+        roamControlServer?.stop()
         spoolWatcher?.stop()
         sessionWatcher?.stop()
         outsideClicks.stop()
@@ -785,6 +803,49 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    // MARK: - Roam over the bridge socket (`aa-roam on` / `aa-roam off`)
+
+    /// Start the socket `aa-roam on`/`off` reach. Failure is logged and left there: every other
+    /// feature in this app works without it, and `aa-roam` already reports "not running" for any
+    /// transport failure, which is the honest answer whether the app is truly absent or its
+    /// control socket alone failed to bind.
+    private func startRoamControlServer() {
+        let socketPath = paths.root.appendingPathComponent("app.sock").path
+        // `approvedRoots: []` is not a placeholder: it is what keeps this host from being able to
+        // start a Claude Code session at all. This socket exists for roam, not for `aa-bridge`'s
+        // job, and a caller that sent `.start` here must be refused exactly as it would be by a
+        // freshly-started `aa-bridge serve` given no `--approve` — see `BridgeHost.isApproved`,
+        // which treats an empty list as "none", never "any".
+        let host = BridgeHost(launcher: RefusingLauncher(), approvedRoots: [],
+                              roamControl: RoamBridgeAdapter(delegate: self))
+        let server = BridgeSocketServer(path: socketPath, host: host)
+        do {
+            try server.start()
+            roamControlServer = server
+        } catch {
+            log("could not start the roam control socket at \(socketPath): \(error)")
+        }
+    }
+
+    /// A `BridgeClientLaunching` that is never actually asked to launch anything.
+    ///
+    /// `BridgeHost.init` takes a launcher unconditionally, but this host's job is roam control,
+    /// not session bridging, and `approvedRoots: []` above means `handleStart` always refuses
+    /// before it ever reaches `chosen.launch(...)`. This exists only to satisfy that parameter
+    /// honestly — a launcher that really cannot launch anything — rather than reusing a real one
+    /// (`ClaudeStreamLauncher`, say) that would need a Claude executable this socket has no use
+    /// for and could give a false impression that session-bridging is actually wired up here.
+    private struct RefusingLauncher: BridgeClientLaunching {
+        /// Named for what finding it would mean: `approvedRoots: []` was supposed to make this
+        /// unreachable.
+        struct UnreachableByDesign: Error {}
+        func launch(sessionID: String, cwd: String, model: String?,
+                    onLine: @escaping (String) -> Void,
+                    onExit: @escaping (Int32) -> Void) throws -> BridgeClientHandle {
+            throw UnreachableByDesign()
+        }
+    }
+
     // MARK: - Menu bar (secondary surface)
 
     private func installStatusItem() {
@@ -1121,5 +1182,120 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
               let contents = try? String(contentsOf: url, encoding: .utf8) else { return }
         let tail = contents.suffix(128 * 1024)
         try? AtomicFile.write(Data(tail.utf8), to: url)
+    }
+}
+
+// MARK: - Roam control, off the bridge socket (`aa-roam on` / `aa-roam off`)
+
+/// Bridges `RoamBridgeControlling` to `AppDelegate` without making `AppDelegate` itself
+/// `Sendable` — it is not: `config`, `roamForeignHold` and everything `RoamService` touches are
+/// plain mutable state, safe only because convention keeps them on the main thread, not because
+/// the type system can see that. Declaring `AppDelegate: RoamBridgeControlling` directly would
+/// force it to claim `Sendable` too (`RoamBridgeControlling` refines it, matching
+/// `BridgeClientLaunching`), and the compiler was right to flag that as a lie.
+///
+/// `@unchecked Sendable` here is the same discipline `BridgeHost` itself already uses: this
+/// adapter's own two methods are the *only* thing that touches `delegate`, and each dispatches
+/// onto main and blocks on a semaphore before doing so — so nothing here is ever reached from two
+/// threads at once, even though nothing about the type proves it. `weak`, because this adapter
+/// must not be what keeps the app delegate alive; `BridgeHost` holds the only reference to it, and
+/// that lives no longer than `AppDelegate.roamControlServer` does.
+private final class RoamBridgeAdapter: RoamBridgeControlling, @unchecked Sendable {
+    private weak var delegate: AppDelegate?
+    init(delegate: AppDelegate) { self.delegate = delegate }
+
+    func roamOn() -> RoamBridgeOutcome {
+        delegate?.performRoamOn() ?? .refused("Agent Warden could not be reached.")
+    }
+
+    func roamOff() -> RoamBridgeOutcome {
+        delegate?.performRoamOff() ?? .exited
+    }
+}
+
+extension AppDelegate {
+    /// Enter roam for a caller that is not a menu click — `aa-roam on`, today.
+    ///
+    /// Runs the *identical* policy `toggleRoam` runs, in the identical order: the battery check
+    /// first, then hotspot detection, then `RoamService.enter`. Duplicated rather than factored
+    /// out of `toggleRoam`, because that method is `@objc` (an action target) and already reads
+    /// awkwardly as a shared entry point; the two are kept in lockstep by inspection, and a
+    /// divergence here is exactly the kind of thing review is for.
+    ///
+    /// Called from `RoamBridgeAdapter`, always on the bridge socket's own worker thread — never
+    /// the main thread, so the blocking wait below cannot deadlock against the `DispatchQueue.main`
+    /// hop it starts.
+    fileprivate func performRoamOn() -> RoamBridgeOutcome {
+        let semaphore = DispatchSemaphore(value: 0)
+        var outcome = RoamBridgeOutcome.refused("Agent Warden could not be reached.")
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { semaphore.signal(); return }
+            guard !self.roam.isActive else { outcome = .alreadyOn; semaphore.signal(); return }
+            guard !self.roam.isChanging else { outcome = .busyChanging; semaphore.signal(); return }
+
+            let reading = PowerProbe.read()
+            switch RoamPolicy.entryAction(reading: reading, threshold: self.config.roamBatteryThreshold) {
+            case .refuse(let percent):
+                outcome = .refused("battery at \(percent)%, at or below the "
+                    + "\(self.config.roamBatteryThreshold)% guard threshold. Charge first, or "
+                    + "lower the threshold in config.json.")
+                semaphore.signal()
+                return
+            case .proceed:
+                break
+            }
+
+            let hotspot = RoamHotspot(kind: RoamNetwork.classify(gateway: self.currentGateway()).rawValue)
+            // `enter`'s completion is the only place this signals from here on. It fires exactly
+            // once — see `RoamService.enter`'s own doc — so there is no risk of signalling twice.
+            self.roam.enter(hotspot: hotspot, onBattery: !reading.onAC) { [weak self] entryOutcome in
+                defer { semaphore.signal() }
+                guard let self else { return }
+                switch entryOutcome {
+                case .entered:
+                    self.roamForeignHold = false
+                    outcome = .entered
+                case .alreadyOn:
+                    outcome = .alreadyOn
+                case .busyChanging:
+                    outcome = .busyChanging
+                case .refused(let error):
+                    self.roamForeignHold = (error == .foreign)
+                    outcome = .refused("could not start: \(error.rawValue)")
+                }
+                self.render()
+            }
+        }
+        // Bounded rather than unconditional: `RoamService`'s own doc says `enter`'s completion is
+        // simply never called if the service is deallocated while the acquire is out (app
+        // quitting mid-request). That is vanishingly rare — this app delegate outlives every
+        // request it can receive — but an unbounded wait would hang one of the socket's bounded
+        // worker threads forever on that one path, and a timeout is one line. The bound is
+        // `PowerLeaseClient`'s own worst case (~12s for `acquire`, two bounded daemon exchanges)
+        // plus headroom, not a guess.
+        if semaphore.wait(timeout: .now() + 20) == .timedOut {
+            return .refused("timed out waiting for roam to respond")
+        }
+        return outcome
+    }
+
+    /// Leave roam for a caller that is not a menu click — `aa-roam off`, today.
+    ///
+    /// Unlike `performRoamOn`, this never blocks on the daemon: `RoamService.exit()` is
+    /// synchronous by design (the assertion is released and `roam.json` is gone before it
+    /// returns), so the dispatched block below always completes on its own, and the wait has no
+    /// timeout — there is nothing here that `RoamService`'s "completion not called" edge case
+    /// could apply to, because there is no completion; `exit()` returns a value directly.
+    fileprivate func performRoamOff() -> RoamBridgeOutcome {
+        let semaphore = DispatchSemaphore(value: 0)
+        var outcome = RoamBridgeOutcome.exited
+        DispatchQueue.main.async { [weak self] in
+            defer { semaphore.signal() }
+            guard let self else { return }
+            outcome = (self.roam.exit() == .pending) ? .pendingExit : .exited
+            self.render()
+        }
+        semaphore.wait()
+        return outcome
     }
 }

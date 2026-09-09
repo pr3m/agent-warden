@@ -6,7 +6,7 @@
 #                                 A timestamped backup is made first. Existing hooks are kept.
 #   2. <data dir>/install-manifest.json — the exact commands we added, per settings file, so
 #                                 uninstall.sh can take exactly those back out and nothing else.
-#   3. ~/.local/bin/{aa-status,aa-emit,aa-bridge,aa-session} — symlinks, so the commands this
+#   3. ~/.local/bin/{aa-status,aa-emit,aa-bridge,aa-session,aa-roam} — symlinks, so the commands this
 #                                 project documents can actually be typed. Only ever created where
 #                                 nothing else is in the way; see --no-path to skip entirely.
 #   4. The power helper (needed for lid-closed roam) — asks for your password once, then writes,
@@ -49,7 +49,7 @@ LINK_DIR="$HOME/.local/bin"
 LINK_PATH="yes"
 # The commands this project documents. `AgentWarden` itself is deliberately not linked: it is an
 # app you open, not a command you type, and a bare `AgentWarden` on PATH would be a surprise.
-LINK_NAMES="aa-status aa-emit aa-bridge aa-session"
+LINK_NAMES="aa-status aa-emit aa-bridge aa-session aa-roam"
 
 while [ $# -gt 0 ]; do
   case "$1" in

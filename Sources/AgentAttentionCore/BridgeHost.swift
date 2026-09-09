@@ -31,6 +31,45 @@ public extension BridgeClientHandle {
     var isRunning: Bool { true }
 }
 
+/// What a bridge host can ask of roam. A seam, exactly like `BridgeClientLaunching` above: the
+/// real implementation lives in `AgentAttentionApp`, wrapping the live `RoamService`, because Core
+/// cannot see the App target's types and — more to the point — because a `BridgeHost` running as
+/// a bare `aa-bridge serve` has no session to hold roam open with. See `aa-roam`'s own doc for why
+/// a short-lived caller cannot do this itself.
+///
+/// Both methods block the calling thread until the attempt resolves. That thread is always one of
+/// `BridgeSocketServer`'s bounded worker threads, never the app's main thread: a socket handler
+/// must answer synchronously, and `RoamService.enter` only reports back once its own round trip
+/// with the power daemon lands.
+public protocol RoamBridgeControlling: Sendable {
+    /// Enter roam. Mirrors whatever policy the app's own toggle runs — the point of going through
+    /// this seam rather than a shortcut is that a CLI caller gets the identical guarantees a click
+    /// would, not fewer of them.
+    func roamOn() -> RoamBridgeOutcome
+    /// Leave roam.
+    func roamOff() -> RoamBridgeOutcome
+}
+
+/// What happened when a bridge caller asked roam to change.
+public enum RoamBridgeOutcome: Sendable, Equatable {
+    /// Roam is now on, freshly entered.
+    case entered
+    /// Roam was already on; nothing changed.
+    case alreadyOn
+    /// Roam is off now — or was already off, which is reported the same way, because a caller
+    /// asking to leave roam wants "not on" and that is true either way.
+    case exited
+    /// Roam was still being entered when the request to leave arrived, so there is nothing to
+    /// tear down *yet*. The exit is remembered and happens the moment entry finishes.
+    case pendingExit
+    /// Something else was already changing roam's state. Try again shortly.
+    case busyChanging
+    /// Roam was refused, or could not be attempted. The string is a sentence for a person, not a
+    /// code — the reasons span two unrelated vocabularies (a battery policy, a power daemon), and
+    /// a caller here only ever needs to show the sentence, never branch on it.
+    case refused(String)
+}
+
 /// The Warden-owned bridge: sessions it started, and nothing else.
 ///
 /// **What this is.** A way for an authorised local caller to start a *new* official Claude Code
@@ -62,13 +101,19 @@ public final class BridgeHost: @unchecked Sendable {
     /// would give a caller a session it cannot see while telling it everything went fine.
     private let visibleLauncher: BridgeClientLaunching?
 
+    /// Answers `roamOn`/`roamOff`, when this host has one. Absent for a bare `aa-bridge serve`,
+    /// which holds no `RoamService` — see `RoamBridgeControlling`.
+    private let roamControl: RoamBridgeControlling?
+
     public init(launcher: BridgeClientLaunching,
                 approvedRoots: [String],
                 visibleLauncher: BridgeClientLaunching? = nil,
+                roamControl: RoamBridgeControlling? = nil,
                 now: @escaping () -> Date = Date.init) {
         self.visibleLauncher = visibleLauncher
         self.launcher = launcher
         self.approvedRoots = approvedRoots.map { BridgeHost.normalise($0) }
+        self.roamControl = roamControl
         self.now = now
     }
 
@@ -145,6 +190,31 @@ public final class BridgeHost: @unchecked Sendable {
         case .events(let sessionID, let after): return handleEvents(sessionID, after: after)
         case .stop(let sessionID): return handleStop(sessionID)
         case .focus(let sessionID): return focus(sessionID: sessionID)
+        case .roamOn: return handleRoam(entering: true)
+        case .roamOff: return handleRoam(entering: false)
+        }
+    }
+
+    /// `roamOn`/`roamOff`, both routed here: the dispatch and the outcome-to-response mapping are
+    /// identical either way, and only which method of `roamControl` gets called differs.
+    private func handleRoam(entering: Bool) -> BridgeResponse {
+        guard let roamControl else {
+            return refusal(.unsupported,
+                           "This bridge host has no roam control. Only a host running inside "
+                           + "Agent Warden itself can enter or leave roam — a bare "
+                           + "`aa-bridge serve` holds no RoamService to ask.")
+        }
+        switch entering ? roamControl.roamOn() : roamControl.roamOff() {
+        case .entered: return BridgeResponse(ok: true, message: "roam on")
+        case .alreadyOn: return BridgeResponse(ok: true, message: "roam on (already on)")
+        case .exited: return BridgeResponse(ok: true, message: "roam off")
+        case .pendingExit:
+            return BridgeResponse(ok: true,
+                                  message: "roam off (leaving as soon as entry finishes)")
+        case .busyChanging:
+            return refusal(.busy, "Roam is already changing state; try again in a moment.")
+        case .refused(let reason):
+            return refusal(.refused, reason)
         }
     }
 
