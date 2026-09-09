@@ -44,6 +44,33 @@ while [ $# -gt 0 ]; do
   esac
 done
 
+# Must run BEFORE "Removing Claude Code hooks" below. manage-hooks.py deletes
+# install-manifest.json outright once its own "targets" section is empty (Scripts/manage-hooks.py
+# is not ours to change — see Scripts/manage-statusline.py's manifest_is_empty() docstring), with
+# no awareness of this script's own "statusLine" section in that same shared file. On a machine
+# with exactly one hooks target — the common case, and the one this was caught against — removing
+# hooks first empties "targets", deletes the whole manifest file, and leaves nothing for the
+# statusline restore below to read: it then correctly refuses to guess rather than doing the wrong
+# thing, but the user's real statusLine.command never comes back. Running statusline first pops
+# our own entry (and, if nothing else remains, deletes the file itself) while "targets" is still
+# whatever it already was; hooks' own cleanup then runs after and makes its usual correct decision
+# about the manifest.
+#
+# Guarded and dry-run-handled like install.sh's own statusline block, not like the hooks call
+# below: statusLine.command always resolves to one fixed real path
+# (~/.claude/bin/agent-warden-statusline.sh) regardless of which --settings file was named, so
+# touching it while --settings names a project or test file would still touch that one real path.
+echo "== Removing the Claude Code status line =="
+if [ "$SETTINGS" != "$DEFAULT_SETTINGS" ]; then
+  echo "note: --settings names a file other than the user one, so the status line is left"
+  echo "      alone. Run without --settings to remove it too."
+elif [ -n "$DRY_RUN" ]; then
+  /usr/bin/python3 "$ROOT/Scripts/manage-statusline.py" uninstall --settings "$SETTINGS" --dry-run
+else
+  /usr/bin/python3 "$ROOT/Scripts/manage-statusline.py" uninstall --settings "$SETTINGS" --write
+fi
+
+echo
 echo "== Removing Claude Code hooks =="
 /usr/bin/python3 "$ROOT/Scripts/manage-hooks.py" uninstall --settings "$SETTINGS" $DRY_RUN
 
@@ -78,14 +105,6 @@ if ! bash "$ROOT/Scripts/install-powerd.sh" uninstall; then
   echo "         ./Scripts/install-powerd.sh uninstall, or repair by hand:" >&2
   echo "             sudo pmset -a disablesleep 0" >&2
 fi
-
-# Same guard shape as the power helper above, and reached only once that guard and the earlier
-# --dry-run exit have already confirmed SETTINGS is the real user file and this is not a preview
-# run — so this call always writes. Restores statusLine.command to whatever it was before install.sh
-# touched it (recorded in install-manifest.json at install time) and removes our wrapper file.
-echo
-echo "== Removing the Claude Code status line =="
-/usr/bin/python3 "$ROOT/Scripts/manage-statusline.py" uninstall --settings "$SETTINGS" --write
 
 OWNERSHIP="$(/usr/bin/python3 "$ROOT/Scripts/launch-agent.py" check "$LAUNCH_AGENT" "$LAUNCH_LABEL" "$APP_BINARY")"
 if [ "$OWNERSHIP" = "ours" ]; then

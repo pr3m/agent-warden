@@ -20,7 +20,8 @@ docstring too, since this one intentionally does not repeat every rationale it a
 2. **The replace step touches only lines that identifiably invoke the old roam-plugin indicator.**
    Matching is content-based (a regex over the file the current command points at), not filename or
    path based, so a wrapper the user has since renamed is still recognised and everything else in
-   it — however unfamiliar — still survives.
+   it — however unfamiliar — still survives. A line that merely *mentions* the invocation in a
+   comment is not touched either (see splice_indicator) — only a line that would actually run it.
 3. **Ownership of statusLine.command is a fixed identity, not a manifest lookup.** Unlike the hook
    emitter, whose install path varies with wherever this repo happens to be checked out, the wrapper
    this script writes always lives at one conventional path (`--wrapper-path`, defaulting to
@@ -304,6 +305,16 @@ def classify(settings: dict, wrapper_path: str) -> tuple[str, str | None, str | 
     for why "ours" is a direct path comparison rather than a manifest lookup. `resolved_script_path`
     is set only when `command` points at a file we could actually read, since that is the one case
     install() can splice on top of rather than wrap from a template.
+
+    A `statusLine` that is present but not the documented `{"type": ..., "command": ...}` shape —
+    a bare string is the case actually seen — must NOT collapse to "absent". "absent" tells
+    build_wrapper() there was truly nothing before, so it writes WRAPPER_TEMPLATE_ABSENT, whose
+    comment says outright "no previous statusLine command was configured" — discarding whatever
+    value the user's live footer was actually built from and lying about it in the file that
+    replaces it. A truthy non-dict value is something, not nothing, so its own string form is
+    used as `command` and flows through the exact same ours/roam-plugin/other checks below —
+    if it happens to equal our wrapper path or a roam-plugin file it is classified accordingly,
+    otherwise it lands on "other" and build_wrapper() wraps it as ORIG_OUT like any other command.
     """
     status_line = settings.get("statusLine")
     command = None
@@ -311,6 +322,8 @@ def classify(settings: dict, wrapper_path: str) -> tuple[str, str | None, str | 
         raw_command = status_line.get("command")
         if isinstance(raw_command, str) and raw_command.strip():
             command = raw_command
+    elif isinstance(status_line, str) and status_line.strip():
+        command = status_line
 
     if command is None:
         return "absent", None, None
@@ -331,13 +344,23 @@ def classify(settings: dict, wrapper_path: str) -> tuple[str, str | None, str | 
 def splice_indicator(original_text: str, roam_bin: str) -> tuple[str, int]:
     """Copy every line verbatim except the ones matching ROAM_INVOCATION_RE, which are replaced
     with the aa-roam equivalent. This is the whole mechanism that preserves an unfamiliar
-    hand-added segment: it is never parsed, classified, or reasoned about — only left alone."""
+    hand-added segment: it is never parsed, classified, or reasoned about — only left alone.
+
+    A commented-out line is skipped even if it matches: `# see $HOME/.claude/roam/bin/roam-cli
+    indicator for how this used to work` is a line that *mentions* the old invocation, not one
+    that runs it, and rewriting it into live shell code would contradict this script's own claim
+    (module docstring, rule 2) that only the plugin's actual indicator invocation is touched.
+    A line counts as a comment when its first non-whitespace character is `#` — matching shell's
+    own rule for what a comment is, so this cannot disagree with how bash itself would read the
+    same line.
+    """
     replacement = build_indicator_line(roam_bin)
     lines = original_text.splitlines(keepends=True)
     replaced = 0
     output: list[str] = []
     for line in lines:
-        if ROAM_INVOCATION_RE.search(line):
+        is_comment = line.lstrip().startswith("#")
+        if not is_comment and ROAM_INVOCATION_RE.search(line):
             newline = "\n" if line.endswith("\n") else ""
             output.append(replacement + newline)
             replaced += 1
