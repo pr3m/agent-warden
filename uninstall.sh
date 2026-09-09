@@ -39,7 +39,7 @@ while [ $# -gt 0 ]; do
     --dry-run) DRY_RUN="--dry-run"; shift ;;
     --settings) SETTINGS="$2"; shift 2 ;;
     --purge) PURGE="yes"; shift ;;
-    -h|--help) sed -n '2,18p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,22p' "$0"; exit 0 ;;
     *) echo "unknown option: $1" >&2; exit 1 ;;
   esac
 done
@@ -85,12 +85,14 @@ else
   # statusline refusal is not, so this warns with exactly what is still wrong and how to finish
   # it by hand, and lets every step after it still run.
   if ! /usr/bin/python3 "$ROOT/Scripts/manage-statusline.py" uninstall --settings "$SETTINGS" --write; then
-    echo "WARNING: status line uninstall reported a failure — see output above (most likely the" >&2
-    echo "         documented refusal when statusLine.command no longer matches Warden's" >&2
-    echo "         wrapper). Your original status line was NOT restored, and Warden's wrapper" >&2
+    echo "WARNING: status line uninstall reported a failure. The message above says which of the" >&2
+    echo "         two documented refusals it was and what to do about it — either" >&2
+    echo "         statusLine.command has drifted from Warden's wrapper, or the manifest was" >&2
+    echo "         lost and the recorded previous value is not restorable. Either way NOTHING" >&2
+    echo "         was changed: your original status line was not restored, and Warden's wrapper" >&2
     echo "         (~/.claude/bin/agent-warden-statusline.sh) is still installed and still" >&2
-    echo "         referenced by statusLine.command in $SETTINGS. Point statusLine.command back" >&2
-    echo "         at the wrapper and re-run:" >&2
+    echo "         referenced by statusLine.command in $SETTINGS. Follow the instructions above," >&2
+    echo "         then re-run:" >&2
     echo "             ./Scripts/manage-statusline.py uninstall --settings $SETTINGS --write" >&2
   fi
 fi
@@ -149,7 +151,10 @@ echo "== Removing the commands from your PATH =="
 # rather than deleted — the same rule the hooks and the login item are held to.
 LINK_DIR="${LINK_DIR:-$HOME/.local/bin}"
 removed=0
-for name in aa-status aa-emit aa-bridge aa-session; do
+# Must list exactly what install.sh's LINK_NAMES creates. `aa-roam` was added there and not here,
+# so an uninstall left a dangling symlink into a bundle it had just stopped maintaining — and the
+# next install "refused" nothing and silently relinked it, which is why nobody noticed.
+for name in aa-status aa-emit aa-bridge aa-session aa-roam; do
   target="$LINK_DIR/$name"
   [ -L "$target" ] || continue
   existing="$(readlink "$target" || true)"

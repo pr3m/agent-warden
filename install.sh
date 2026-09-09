@@ -14,8 +14,10 @@
 #                                 claude-code-roam wrapper is already installed, every other segment
 #                                 it chains (your own status line, any hand-added block) is carried
 #                                 over verbatim; only the roam-plugin's own indicator line is
-#                                 replaced. A timestamped settings.json backup is made first, and the
-#                                 previous statusLine is recorded so uninstall.sh restores it exactly.
+#                                 replaced. The resulting wrapper is PRINTED AND CONFIRMED before
+#                                 anything is written — this is not a silent migration. A timestamped
+#                                 settings.json backup is made first, and the previous statusLine is
+#                                 recorded so uninstall.sh restores it exactly.
 #                                 Skipped when --settings names a non-default file — see below.
 #   5. The power helper (needed for lid-closed roam) — asks for your password once, then writes,
 #                                 all root:wheel and outside every user-writable path:
@@ -30,8 +32,12 @@
 #   ./install.sh                 build if needed, back up, wire hooks, link the CLI, offer to launch
 #   ./install.sh --dry-run       show the resulting hooks block, change nothing
 #   ./install.sh --settings PATH target a project settings file instead of the user one — also
-#                                 skips the power helper and the login item, both user-level and
-#                                 not tied to any particular settings file
+#                                 skips the status line and the power helper, since each of those
+#                                 touches ONE fixed real path whichever settings file is named.
+#                                 The login item (--login-item) and the PATH links are NOT skipped:
+#                                 they are opt-in or idempotent and name no settings file at all.
+#                                 (uninstall.sh does skip those two under --settings, because there
+#                                 removing them is destructive and here creating them is not.)
 #   ./install.sh --login-item    also start the app at login (opt-in, off by default)
 #   ./install.sh --no-launch     wire the hooks but do not start the app now
 #   ./install.sh --link-dir DIR  put the command symlinks somewhere else (default ~/.local/bin)
@@ -68,7 +74,7 @@ while [ $# -gt 0 ]; do
     --no-launch) LAUNCH=""; shift ;;
     --link-dir) LINK_DIR="$2"; shift 2 ;;
     --no-path) LINK_PATH=""; shift ;;
-    -h|--help) sed -n '2,30p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,44p' "$0"; exit 0 ;;
     *) echo "unknown option: $1" >&2; exit 1 ;;
   esac
 done
@@ -95,7 +101,34 @@ if [ "$SETTINGS" != "$DEFAULT_SETTINGS" ]; then
 elif [ -n "$DRY_RUN" ]; then
   /usr/bin/python3 "$ROOT/Scripts/manage-statusline.py" install --settings "$SETTINGS" --roam-bin "$ROAM_BIN" --dry-run
 else
-  /usr/bin/python3 "$ROOT/Scripts/manage-statusline.py" install --settings "$SETTINGS" --roam-bin "$ROAM_BIN" --write
+  # Preview, then ask. This edits a file the user hand-tuned -- on the machine this was written
+  # against, one that chains their own status line AND a hand-added segment with no other copy
+  # anywhere -- so the design says in as many words: "Show the resulting wrapper and ask before
+  # writing. This edits a file the user hand-tuned; it is not a silent migration."
+  #
+  # manage-statusline.py already defaults to preview and requires --write; this was the one caller
+  # that reached straight past that guard to --write. The preview below is the script's own dry
+  # run, so what is shown is exactly what --write then produces.
+  echo "This is the wrapper that would be written to ~/.claude/bin/agent-warden-statusline.sh:"
+  echo
+  /usr/bin/python3 "$ROOT/Scripts/manage-statusline.py" install --settings "$SETTINGS" --roam-bin "$ROAM_BIN" --dry-run
+  echo
+  if [ -t 0 ]; then
+    read -r -p "Migrate your status line to this wrapper? [y/N] " statusline_reply
+  else
+    # No terminal to ask at (piped install, CI). Skipping is the safe direction: the rest of the
+    # install still works, and roam's badge is the one thing lost until this is run by hand.
+    statusline_reply="n"
+    echo "note: no terminal to confirm at, so the status line was left alone."
+  fi
+  case "$statusline_reply" in
+    [yY]*)
+      /usr/bin/python3 "$ROOT/Scripts/manage-statusline.py" install --settings "$SETTINGS" --roam-bin "$ROAM_BIN" --write ;;
+    *)
+      echo "status line   : left alone. Apply it later with:"
+      echo "                  /usr/bin/python3 $ROOT/Scripts/manage-statusline.py install \\"
+      echo "                      --settings \"$SETTINGS\" --roam-bin \"$ROAM_BIN\" --write" ;;
+  esac
 fi
 
 echo

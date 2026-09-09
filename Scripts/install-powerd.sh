@@ -37,9 +37,63 @@ install)
   # set) and, on many Macs, already holds other vendors' privileged helpers. Created only
   # when absent, with the mode baked into the mkdir itself — never chmod'd afterwards — so
   # an existing directory's sticky bit is never silently downgraded to 0755.
+  #
+  # When it already exists it is VERIFIED rather than corrected. The security of everything
+  # below rests on this directory: a root daemon whose binary sits somewhere the installing
+  # user can write is arbitrary root execution for anyone who can write that file, and the
+  # 0755-mode helper we drop in is only as safe as the directory holding it. But a directory
+  # this script did not create is not this script's to re-permission — silently chmod'ing a
+  # shared Apple path (or one another vendor's installer set up) is its own way to break a
+  # machine. So: refuse, say exactly what is wrong, and let a human decide. It is
+  # `root:wheel drwxr-xr-t` on the machine this was written on, so this is a guard against a
+  # tampered or oddly-restored system, not a live exposure.
   if [ ! -d /Library/PrivilegedHelperTools ]; then
     sudo mkdir -p -m 755 /Library/PrivilegedHelperTools
     sudo chown root:wheel /Library/PrivilegedHelperTools
+  else
+    HELPER_DIR_OWNER="$(stat -f '%u' /Library/PrivilegedHelperTools)"
+    # Symbolic (`drwxr-xr-t`), not octal. `stat -f '%OLp'` drops leading zeros — mode 0020 comes
+    # back as "20" — so digit positions in it are not fixed and a pattern written against three
+    # digits silently misses exactly the group-writable case this is here to catch. The symbolic
+    # form is always ten characters: 6 is the group write bit, 9 is the other write bit.
+    HELPER_DIR_MODE="$(stat -f '%Sp' /Library/PrivilegedHelperTools)"
+    if [ "$HELPER_DIR_OWNER" != "0" ]; then
+      echo "refusing to install: /Library/PrivilegedHelperTools is owned by uid $HELPER_DIR_OWNER, not root." >&2
+      echo "A root daemon installed into a directory somebody else owns is a root-execution hole." >&2
+      echo "Inspect it (ls -ld /Library/PrivilegedHelperTools) and repair it deliberately:" >&2
+      echo "    sudo chown root:wheel /Library/PrivilegedHelperTools" >&2
+      exit 1
+    fi
+    # A symlink first, because `[ -d ]` above follows one and everything after this reads the
+    # LINK's owner and mode, not the target's. A root-owned symlink pointing at a user-writable
+    # directory would otherwise sail through both checks and put the helper exactly where it
+    # must not go. `%Sp`'s first character is the type; anything but a real directory is refused.
+    case "$HELPER_DIR_MODE" in
+      d*) ;;
+      *)
+        echo "refusing to install: /Library/PrivilegedHelperTools is not a directory ($HELPER_DIR_MODE)." >&2
+        echo "A symlink here would put a root daemon wherever it points. Inspect it:" >&2
+        echo "    ls -ld /Library/PrivilegedHelperTools" >&2
+        exit 1 ;;
+    esac
+    # Group- or world-writable is the same hole by another route: anyone in that set can
+    # replace the helper binary this script is about to install.
+    case "$HELPER_DIR_MODE" in
+      ?????w????) GROUP_WRITABLE="yes" ;;
+      *)          GROUP_WRITABLE="" ;;
+    esac
+    case "$HELPER_DIR_MODE" in
+      ????????w?) WORLD_WRITABLE="yes" ;;
+      *)          WORLD_WRITABLE="" ;;
+    esac
+    if [ -n "$WORLD_WRITABLE" ] || [ -n "$GROUP_WRITABLE" ]; then
+      echo "refusing to install: /Library/PrivilegedHelperTools is $HELPER_DIR_MODE, which is" >&2
+      echo "writable by ${GROUP_WRITABLE:+its group}${GROUP_WRITABLE:+${WORLD_WRITABLE:+ and }}${WORLD_WRITABLE:+everyone}." >&2
+      echo "Anyone who can write that directory can replace the root helper installed into it." >&2
+      echo "Inspect it (ls -ld /Library/PrivilegedHelperTools) and repair it deliberately:" >&2
+      echo "    sudo chmod go-w /Library/PrivilegedHelperTools" >&2
+      exit 1
+    fi
   fi
   sudo mkdir -p "$SUPPORT"
   sudo chown root:wheel "$SUPPORT"
