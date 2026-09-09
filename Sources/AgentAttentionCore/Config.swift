@@ -69,11 +69,15 @@ public struct AttentionConfig: Codable, Sendable, Equatable {
     /// Percent at which roam ends itself and the machine sleeps deliberately.
     ///
     /// Ten rather than the bottom of `RoamPolicy.thresholdRange`, because the guard is not
-    /// instantaneous: it is only consulted once per sweep (`sweepIntervalSeconds`, 15 by
-    /// default), and what follows the decision is a lease release the daemon has to confirm and
+    /// instantaneous: it is consulted once per lease renewal (`PowerLease.renewInterval`, 10
+    /// seconds), and what follows the decision is a lease release the daemon has to confirm and
     /// a system sleep the machine has to carry out. A threshold at the floor would leave no
-    /// margin for a sweep that noticed a moment late, and none for reopening the lid afterwards.
-    /// Clamped to `RoamPolicy.thresholdRange` in `validated()`.
+    /// margin for the check that noticed a moment late, and none for reopening the lid
+    /// afterwards.
+    ///
+    /// A value outside `RoamPolicy.thresholdRange` falls back to this default in `validated()`,
+    /// and deliberately **not** to the nearest bound: clamping 200 to 50 would sleep an
+    /// unattended Mac at half charge, turning a typo into the most aggressive guard available.
     public var roamBatteryThreshold: Int
     /// The network you expect to be on while roaming. Best-effort: a warning, never a block.
     ///
@@ -97,9 +101,10 @@ public struct AttentionConfig: Codable, Sendable, Equatable {
     public var roamNudgeSnoozeMinutes: Int
 
     /// How long a dismissed roam nudge may stay quiet. The floor is 1 because 0 minutes would
-    /// make dismissing the prompt a no-op — it would return on the very next sweep. The ceiling
-    /// is a day because anything longer outlives any plausible roam session, at which point it
-    /// is not a snooze but a way of turning the prompt off without saying so.
+    /// make dismissing the prompt a no-op — `NudgePolicy.shouldNudge` compares `now` against the
+    /// snooze deadline, so a zero-length one has expired by the time it is next consulted. The ceiling is
+    /// a day because anything longer outlives any plausible roam session, at which point it is
+    /// not a snooze but a way of turning the prompt off without saying so.
     public static let roamNudgeSnoozeRange = 1...1440
 
     public static let `default` = AttentionConfig(
@@ -207,14 +212,23 @@ public struct AttentionConfig: Codable, Sendable, Equatable {
         copy.bubblePlacement.offsetX = clamp(bubblePlacement.offsetX, 0, 8000, d.bubblePlacement.offsetX)
         copy.bubblePlacement.offsetY = clamp(bubblePlacement.offsetY, 0, 8000, d.bubblePlacement.offsetY)
         // Clamped to the policy's own declared range, so the file and the policy cannot disagree
-        // about what a usable threshold is. It matters which way this goes: `RoamPolicy` answers
-        // `.none` to a threshold outside the range, so a hand-edited 0 would leave a roaming Mac
-        // with no battery guard at all — silently, and only at the moment it was needed. Clamping
-        // turns a typo into a working guard. The policy's own range check stays as it is, for any
-        // caller that never passes through here.
-        copy.roamBatteryThreshold = Swift.min(Swift.max(roamBatteryThreshold,
-                                                        RoamPolicy.thresholdRange.lowerBound),
-                                              RoamPolicy.thresholdRange.upperBound)
+        // **Fallback, not a clamp, and the difference is the whole point.** A threshold outside
+        // `RoamPolicy.thresholdRange` is a typo, and the two ends fail in opposite directions:
+        // `RoamPolicy` answers `.none` to a hand-edited 0, leaving a roaming Mac with no battery
+        // guard at all — silently, and only at the moment it was needed — while clamping a
+        // hand-edited 200 to the ceiling would sleep an unattended Mac at 50%, turning the same
+        // typo into the most aggressive guard available. Neither bound is a safe reading of a
+        // number the user cannot have meant. The shipped default is, so both ends land there:
+        // a working, conservative guard either way, and `AttentionConfig.save` then writes that
+        // rather than a value the policy would refuse. The policy's own range check stays exactly
+        // as it is, for any caller that never passes through here.
+        copy.roamBatteryThreshold = RoamPolicy.thresholdRange.contains(roamBatteryThreshold)
+            ? roamBatteryThreshold
+            : d.roamBatteryThreshold
+        // Clamped to the nearest bound rather than defaulted, because neither end inverts
+        // anything: too small makes a dismissal last a minute instead of none, too large makes a
+        // prompt quiet for a day. A nudge that fires late or not at all costs a sentence — this
+        // is the one roam setting that cannot put a machine to sleep.
         copy.roamNudgeSnoozeMinutes = Swift.min(Swift.max(roamNudgeSnoozeMinutes,
                                                           AttentionConfig.roamNudgeSnoozeRange.lowerBound),
                                                 AttentionConfig.roamNudgeSnoozeRange.upperBound)

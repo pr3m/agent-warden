@@ -63,6 +63,27 @@ final class RoamService {
     /// instance method there and `self` is not available before then.
     var log: (String) -> Void = { _ in }
 
+    /// The percentage at which the guard ends roam, read afresh every time it is consulted.
+    ///
+    /// A closure rather than a stored `Int` because the guard now runs off the lease heartbeat
+    /// rather than off `AppDelegate.refresh()`, so nothing hands it a value on the way in. Read
+    /// through, `AppDelegate` has exactly one copy of the setting and it cannot go stale here
+    /// when the config is re-read from disk. Defaults to the shipped value so an unwired service
+    /// still guards the battery rather than not guarding it.
+    var batteryThreshold: () -> Int = { AttentionConfig.default.roamBatteryThreshold }
+
+    /// The last thing roam had to say, and when — kept so it can be recovered rather than lost.
+    ///
+    /// `AttentionPanelController.flash` writes to the panel's status line and schedules a clear;
+    /// it does not show the panel. With the lid closed the panel is certainly hidden, so the one
+    /// sentence that matters most — the Mac was left awake, here is the command that clears it —
+    /// would reach nothing but the log and then erase itself. Held here so Phase 3 can put it on
+    /// a menu row, where somebody coming back to a slept machine will actually find it.
+    ///
+    /// Cleared when roam is entered again: a notice explaining how the *last* session ended has
+    /// nothing to say about this one.
+    private(set) var lastNotice: (text: String, at: Date)?
+
     private let paths: AppPaths
     private let assertion = SleepAssertion()
     private let lease = PowerLeaseClient()
@@ -80,13 +101,38 @@ final class RoamService {
     /// `beginActivity()`.
     private var activity: NSObjectProtocol?
 
-    /// True while a lease call is in flight. Guards against a second `enter` opening a second
-    /// connection, and against an `exit` racing the `enter` it would be undoing.
-    private var settling = false
+    /// What this service currently has outstanding with the daemon.
+    ///
+    /// Named rather than a bare "busy" flag because the two in-flight cases must be told apart:
+    /// during an `acquire` roam is *about to be on* and a request to leave has to be remembered,
+    /// while during a `release` roam is already over and there is nothing left to countermand.
+    /// A single boolean cannot answer that, and reading it as though it could is how a machine
+    /// ends up doing the opposite of what it was asked.
+    private enum Phase: Equatable {
+        /// Nothing is out. `state` alone says whether roam is on.
+        case idle
+        /// An `acquire` is in flight. `state` is still nil; roam is not on yet.
+        case entering
+        /// A `release` is in flight. `state` was already cleared; roam is over either way.
+        case leaving
+    }
+    private var phase: Phase = .idle
+
+    /// A request to leave roam that arrived while an `acquire` was still out.
+    ///
+    /// `acquire()` can block for about twelve seconds against a wedged daemon. Dropping a toggle
+    /// during that window would leave the machine doing the opposite of what was asked — the
+    /// user says "roam off", and roam comes on. So the intent is recorded and honoured the
+    /// instant the acquire lands. Set only in `Phase.entering`, and consumed by that acquire's
+    /// completion on both its branches, so it can never be inherited by a later session.
+    private var pendingExit = false
 
     init(paths: AppPaths) {
         self.paths = paths
         lease.onLost = { [weak self] in self?.leaseLost() }
+        // The battery guard and the liveness stamp both hang off the lease's own heartbeat. See
+        // `leaseRenewed()` for why that is the only clock either of them may use.
+        lease.onRenewed = { [weak self] in self?.leaseRenewed() }
     }
 
     /// Is roam established right now?
@@ -96,9 +142,10 @@ final class RoamService {
     /// drawing a menu.
     var isActive: Bool { state != nil }
 
-    /// Is a request to the daemon outstanding? A toggle should be disabled while this is true —
-    /// `enter` and `exit` both refuse to act on top of one.
-    var isChanging: Bool { settling }
+    /// Is a request to the daemon outstanding? A toggle should be disabled while this is true.
+    /// If it is not, nothing breaks: `enter` answers `.busyChanging`, and `exit` is remembered
+    /// and honoured rather than dropped.
+    var isChanging: Bool { phase != .idle }
 
     /// The session as it stands, for anything that wants to show when it started or which
     /// hotspot it believes it is on.
@@ -129,11 +176,13 @@ final class RoamService {
     ///   - hotspot: what the caller believes the network is, recorded for the status surfaces.
     ///     Best-effort and never a gate — see `RoamNetwork`.
     ///   - onBattery: whether the machine was unplugged at entry. Recorded, not acted on.
-    ///   - completion: called on the main thread, always, exactly once.
+    ///   - completion: called on the main thread, exactly once — unless this service is
+    ///     deallocated while the acquire is out, in which case it is not called at all. There is
+    ///     nobody left to tell by then, and the lease is given back as the client deallocates.
     func enter(hotspot: RoamHotspot?, onBattery: Bool,
                completion: @escaping (RoamEntry) -> Void) {
         guard state == nil else { completion(.alreadyOn); return }
-        guard !settling else { completion(.busyChanging); return }
+        guard phase == .idle else { completion(.busyChanging); return }
 
         // Taken first because it is instant and local: if the kernel refuses it there is nothing
         // to undo and no reason to have troubled the daemon.
@@ -143,7 +192,7 @@ final class RoamService {
             return
         }
         beginActivity()
-        settling = true
+        phase = .entering
         onChange?()                     // a UI can show the transition and stop offering the toggle
 
         // Captured strongly on purpose. If this service is deallocated while the call is out,
@@ -155,11 +204,13 @@ final class RoamService {
             let outcome = lease.acquire()
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
-                self.settling = false
+                self.phase = .idle
                 switch outcome {
                 case .failure(let error):
                     self.assertion.release()
                     self.endActivity()
+                    // Roam never started, so there is nothing for a queued exit to undo.
+                    self.pendingExit = false
                     self.log("roam refused: \(error.rawValue)")
                     self.onChange?()
                     completion(.refused(error))
@@ -179,11 +230,21 @@ final class RoamService {
                         enteredOnBattery: onBattery,
                         hotspot: hotspot
                     )
+                    // Whatever ended the previous session has nothing to say about this one.
+                    self.lastNotice = nil
                     self.persist()
                     self.log("roam on\(onBattery ? " (on battery)" : "")"
                              + (hotspot.map { ", network: \($0.kind)" } ?? ""))
                     self.onChange?()
+                    // Reported before the queued exit is honoured, because the enter really did
+                    // succeed — and the caller learning "entered, then left again" in that order
+                    // is the truth. The other order would report a failure that did not happen.
                     completion(.entered)
+                    if self.pendingExit {
+                        self.pendingExit = false
+                        self.log("roam: honouring the exit requested while the lease was being taken")
+                        self.exit()
+                    }
                 }
             }
         }
@@ -196,12 +257,24 @@ final class RoamService {
     /// saying roam is on would be telling a status reader the machine is protected while the
     /// block is being dropped. The other order is the dangerous one.
     func exit() {
-        guard state != nil else { return }
-        guard !settling else {
-            log("roam: ignoring an exit while a power request is still out")
+        switch phase {
+        case .entering:
+            // Roam is not on yet, so there is nothing to tear down — but there will be in a
+            // moment, and dropping this would leave the machine doing the opposite of what was
+            // asked. The acquire's completion honours it. `state` is nil here, which is why this
+            // is checked *before* the `state != nil` guard below rather than after it.
+            pendingExit = true
+            log("roam: exit requested while the lease is being taken — it will be honoured "
+                + "as soon as that lands")
+            onChange?()
             return
+        case .leaving:
+            return                      // already going; `state` was cleared before the request
+        case .idle:
+            break
         }
-        settling = true
+        guard state != nil else { return }
+        phase = .leaving
         assertion.release()
         endActivity()
         clearSession()
@@ -212,7 +285,7 @@ final class RoamService {
             let confirmed = lease.release()
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
-                self.settling = false
+                self.phase = .idle
                 // `false` means unconfirmed, never "there was nothing to release" — an expired
                 // lease answers `error nolease` and lands here too. It is logged rather than put
                 // in front of the user because the connection is torn down either way, and the
@@ -232,38 +305,51 @@ final class RoamService {
     /// No `lease.release()` here. It blocks the main thread for up to six seconds at the one
     /// moment nothing may block, and it is not needed: the daemon drops a lease whose holder
     /// disconnects, and this process's socket closes as it exits. What must happen here is
-    /// local — end the activity token, which is process-wide and pairs with `beginActivity`,
-    /// and take the file away so nothing reports a session that ended with the app.
+    /// local and instant — give the idle assertion back, end the activity token (process-wide,
+    /// and paired with `beginActivity`), and take the file away so nothing reports a session
+    /// that ended with the app.
     func shutdown() {
-        guard state != nil else { return }
+        // Broader than `state != nil` on purpose: an `acquire` may still be in flight, and by
+        // then the assertion and the activity token have both been taken — the session simply
+        // never landed. Quitting must give those back either way.
+        guard state != nil || phase == .entering else { return }
+        let wasEstablished = state != nil
         assertion.release()
         endActivity()
         state = nil
         removeStateFile()
-        log("roam ended: Agent Warden is quitting")
+        log(wasEstablished ? "roam ended: Agent Warden is quitting"
+                           : "roam abandoned while it was starting: Agent Warden is quitting")
     }
 
-    /// Driven by `AppDelegate`'s existing sweep. No new timer.
+    /// The daemon confirmed a renewal: stamp the file and look at the battery.
     ///
-    /// - Parameters:
-    ///   - reading: the machine's power situation, from `PowerProbe.read()`.
-    ///   - threshold: `AttentionConfig.roamBatteryThreshold`, already clamped by `validated()`.
-    func tick(reading: PowerReading, threshold: Int) {
-        guard state != nil, !settling else { return }
-
-        // Refreshed so a reader can tell a live session from a file left behind by a crash.
-        //
-        // Precisely what this stamp means: *this process was alive and still believed it held
-        // the lease, at this instant*. It is not the lease's own renewal — that is the client's
-        // 10-second `.strict` heartbeat, and a failed one clears this session through `onLost`
-        // before the next sweep arrives. `RoamState.isLive` reads it against a 45-second window
-        // (`PowerLease.expiry`), which the default 15-second sweep keeps comfortably inside. A
-        // hand-edited `sweepIntervalSeconds` above 45 would make a live session read as dead
-        // here; that is a limit of hanging this off the existing sweep rather than a new timer.
+    /// **Both of these hang off the lease's own heartbeat, and neither may hang off anything
+    /// else.** An earlier revision drove them from `AppDelegate`'s sweep, which was wrong twice
+    /// over. `sweepIntervalSeconds` is a user-editable setting clamped to `1...3600`: at an hour,
+    /// the battery guard would be absent for an hour at a time on a lid-closed Mac — the precise
+    /// failure roam exists to prevent — and at anything above 45 seconds a live session would
+    /// read as dead, because `RoamState.isLive` measures `leaseRenewedAt` against a 45-second
+    /// window — the same number as `PowerLease.expiry`, and its default argument. The sweep is
+    /// also the weaker clock in kind, not just in cadence: it
+    /// is a `Timer` on the main run loop with a two-second tolerance, while the renew timer is a
+    /// `.strict` dispatch source that overrides the system's minimum leeway. Roam runs with no
+    /// windows, nothing frontmost and the display off, which is exactly when that difference
+    /// stops being theoretical.
+    ///
+    /// So the cadence here is `PowerLease.renewInterval` (10s), fixed, and it costs no new timer:
+    /// this is the heartbeat the client already runs to hold the lease at all.
+    ///
+    /// The stamp now means what its name says — the daemon confirmed this renewal at this
+    /// instant. A renewal that is *refused* arrives at `leaseLost()` instead, never here.
+    private func leaseRenewed() {
+        guard state != nil, phase == .idle else { return }
         state?.leaseRenewedAt = Date()
         persist()
 
-        switch RoamPolicy.guardAction(reading: reading, threshold: threshold, roamActive: true) {
+        switch RoamPolicy.guardAction(reading: PowerProbe.read(),
+                                      threshold: batteryThreshold(),
+                                      roamActive: true) {
         case .none:
             return
         case .exitAndSleep(let percent):
@@ -279,11 +365,10 @@ final class RoamService {
     /// nobody sees; a sleep requested while the machine-wide block may still stand is a machine
     /// that simply stays awake on a dying battery, having told its owner it was asleep.
     private func endForBattery(percent: Int) {
-        let notice = "Battery at \(percent)% — ending roam and sleeping your Mac to save your work."
-        onNotice?(notice)
-        log("battery guard: \(percent)% on battery — \(notice)")
+        notify("Battery at \(percent)% — ending roam and sleeping your Mac to save your work.",
+               logPrefix: "battery guard: \(percent)% on battery — ")
 
-        settling = true
+        phase = .leaving
         clearSession()
 
         let lease = self.lease
@@ -291,7 +376,7 @@ final class RoamService {
             let released = lease.release()
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
-                self.settling = false
+                self.phase = .idle
                 self.assertion.release()
                 self.endActivity()
                 // `false` is *unconfirmed*, not "nothing to release": an expired lease answers
@@ -301,17 +386,15 @@ final class RoamService {
                 // stay asleep is worse than not sleeping it, and worse still if we then say we
                 // did.
                 guard released else {
-                    let warning = "Roam ended, but the sleep block could not be confirmed as "
-                        + "cleared, so your Mac was left awake. Clear it with: "
-                        + "sudo pmset -a disablesleep 0"
-                    self.log("battery guard: " + warning)
-                    self.onNotice?(warning)
+                    self.notify("Roam ended, but the sleep block could not be confirmed as "
+                                + "cleared, so your Mac was left awake. Clear it with: "
+                                + "sudo pmset -a disablesleep 0",
+                                logPrefix: "battery guard: ")
                     return
                 }
                 if !SystemSleep.now() {
-                    let warning = "Roam ended, but macOS refused the request to sleep."
-                    self.log("battery guard: " + warning)
-                    self.onNotice?(warning)
+                    self.notify("Roam ended, but macOS refused the request to sleep.",
+                                logPrefix: "battery guard: ")
                 }
             }
         }
@@ -330,10 +413,22 @@ final class RoamService {
         assertion.release()
         endActivity()
         clearSession()
-        let notice = "Roam ended: the power helper stopped holding the sleep block. "
-            + "Closing the lid will now sleep your Mac."
-        log(notice)
-        onNotice?(notice)
+        notify("Roam ended: the power helper stopped holding the sleep block. "
+               + "Closing the lid will now sleep your Mac.")
+    }
+
+    /// Say one thing to the user, and keep it.
+    ///
+    /// The single door for everything roam has to announce, so `lastNotice`, the log and
+    /// `onNotice` cannot drift apart — three call sites each remembering to do all three is how
+    /// one of them ends up doing two.
+    ///
+    /// - Parameter logPrefix: context for the log line only. The user gets the sentence; the log
+    ///   gets the sentence and which mechanism produced it.
+    private func notify(_ text: String, logPrefix: String = "") {
+        lastNotice = (text: text, at: Date())
+        log(logPrefix + text)
+        onNotice?(text)
     }
 
     /// Forget the session in memory and on disk, and say so. Deliberately touches neither the
@@ -345,6 +440,12 @@ final class RoamService {
         onChange?()
     }
 
+    /// Take `roam.json` away, treating "it was not there" as success.
+    ///
+    /// Every caller wants the same end state — no file — and three of the four reach here from a
+    /// path where the file may legitimately be absent already: a failed write, a session that
+    /// never persisted, and `discardStaleState`'s own existence check racing nothing in
+    /// particular. Only a real failure is worth a log line.
     private func removeStateFile() {
         do {
             try FileManager.default.removeItem(at: paths.roamFile)
@@ -380,7 +481,7 @@ final class RoamService {
     ///
     /// **Why `.userInitiatedAllowingIdleSystemSleep` and not `.userInitiated`.** The header
     /// defines them one line apart (`NSProcessInfo.h:155-156`):
-    /// `NSActivityUserInitiated = (0x00FFFFFF | NSActivityIdleSystemSleepDisabled)` and
+    /// `NSActivityUserInitiated = (0x00FFFFFFULL | NSActivityIdleSystemSleepDisabled)` and
     /// `NSActivityUserInitiatedAllowingIdleSystemSleep = (NSActivityUserInitiated & ~NSActivityIdleSystemSleepDisabled)`.
     /// So `.userInitiated` would also hold idle sleep off — which `SleepAssertion` already does,
     /// through IOKit, with a name that shows up in `pmset -g assertions`. Two mechanisms for one
@@ -397,6 +498,9 @@ final class RoamService {
         )
     }
 
+    /// Give the activity token back. Idempotent, and safe to call on a session that never took
+    /// one — which is why every path that ends roam can call it without first asking whether
+    /// there is anything to end.
     private func endActivity() {
         guard let activity else { return }
         ProcessInfo.processInfo.endActivity(activity)

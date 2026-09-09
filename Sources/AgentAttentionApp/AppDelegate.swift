@@ -75,6 +75,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // these sentences carry a command to type when something needs repairing.
         roam.onNotice = { [weak self] message in self?.panel.flash(message, seconds: 20) }
         roam.log = { [weak self] message in self?.log(message) }
+        // Read through rather than pushed, so the guard cannot be running on a threshold this
+        // object changed minutes ago — `config` is replaced wholesale by both a settings change
+        // and a hand-edited file being reloaded. If this delegate is gone there is no live
+        // configuration to speak for, and the shipped default is the safe answer.
+        roam.batteryThreshold = { [weak self] in
+            self?.config.roamBatteryThreshold ?? AttentionConfig.default.roamBatteryThreshold
+        }
         speech.isEnabled = config.speechIsAudible
         speech.voiceIdentifier = config.speechVoiceIdentifier
         chime.isEnabled = config.chimeIsAudible
@@ -236,12 +243,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         announce(effects)
         render()
 
-        // The battery guard, on the existing sweep and on no timer of its own. Asked only while
-        // roam is on: reading power sources is cheap, but there is nothing to decide when roam is
-        // off, and this runs every `sweepIntervalSeconds` for as long as the app is up.
-        if roam.isActive {
-            roam.tick(reading: PowerProbe.read(), threshold: config.roamBatteryThreshold)
-        }
+        // Deliberately nothing about roam here. The battery guard and the liveness stamp run off
+        // the power lease's own 10-second heartbeat instead — see `RoamService.leaseRenewed()`:
+        // this sweep's interval is user-editable up to an hour, which would leave a lid-closed
+        // Mac unguarded for an hour at a time.
 
         // One handshake per tick, off this thread: it takes the script gate and waits on a
         // terminal, and neither belongs on the thread that draws the queue. A tick that finds

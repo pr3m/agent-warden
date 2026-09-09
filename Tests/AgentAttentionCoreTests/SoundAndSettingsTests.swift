@@ -283,27 +283,52 @@ struct AttentionCertaintyTests {
         #expect(decoded.soundEnabled, "the one key the old file did carry is still honoured")
     }
 
-    /// A hand-edited threshold outside the policy's range must not silently disable the battery
-    /// guard: `RoamPolicy.guardAction` answers `.none` to one, so an unclamped 0 would leave a
-    /// roaming Mac with nothing watching the battery. An empty SSID is not a choice of network.
-    @Test("Roam settings are clamped to something the guard can actually run at")
-    func roamSettingsAreClamped() throws {
+    /// A hand-edited battery threshold outside the guard's range falls back to the shipped
+    /// default, and **never to the nearest bound**. Both ends are typos, and both bounds are
+    /// dangerous readings of one: `RoamPolicy.guardAction` answers `.none` below the floor, so 0
+    /// would leave a roaming Mac with nothing watching the battery at all; clamping 200 up to the
+    /// ceiling would sleep an unattended Mac at half charge. The default is the only value that
+    /// is a working, conservative guard for either mistake.
+    @Test("A roam threshold outside the guard's range falls back to the default, not to a bound")
+    func roamThresholdFallsBackToTheDefault() throws {
+        let d = AttentionConfig.default
+
+        for raw in [-5, 0, 51, 200, 1_000_000] {
+            let mangled = Data(#"{"roamBatteryThreshold": \#(raw)}"#.utf8)
+            let loaded = try JSONCoding.decoder.decode(AttentionConfig.self, from: mangled).validated()
+            #expect(loaded.roamBatteryThreshold == d.roamBatteryThreshold,
+                    "\(raw) must land on the default, not on a bound")
+            #expect(loaded.roamBatteryThreshold != RoamPolicy.thresholdRange.upperBound,
+                    "clamping to 50 would sleep an unattended Mac at half charge")
+            #expect(RoamPolicy.thresholdRange.contains(loaded.roamBatteryThreshold),
+                    "and whatever it lands on, the policy must accept it")
+        }
+
+        // A value inside the range is the user's, and is left exactly alone.
+        for raw in [RoamPolicy.thresholdRange.lowerBound, 7, RoamPolicy.thresholdRange.upperBound] {
+            let good = Data(#"{"roamBatteryThreshold": \#(raw)}"#.utf8)
+            let loaded = try JSONCoding.decoder.decode(AttentionConfig.self, from: good).validated()
+            #expect(loaded.roamBatteryThreshold == raw)
+        }
+    }
+
+    /// The snooze is clamped to the nearest bound rather than defaulted, because neither end of
+    /// it inverts anything — it is the one roam setting that cannot put a machine to sleep. An
+    /// empty SSID is not a choice of network.
+    @Test("The roam nudge snooze is clamped, and a blank SSID is no SSID")
+    func roamNudgeSettingsAreClamped() throws {
         let mangled = Data(#"""
-        {"roamBatteryThreshold": 0, "roamNudgeSnoozeMinutes": 0, "roamHotspotSSID": "  "}
+        {"roamNudgeSnoozeMinutes": 0, "roamHotspotSSID": "  "}
         """#.utf8)
         let loaded = try JSONCoding.decoder.decode(AttentionConfig.self, from: mangled).validated()
-
-        #expect(RoamPolicy.thresholdRange.contains(loaded.roamBatteryThreshold))
-        #expect(loaded.roamBatteryThreshold == RoamPolicy.thresholdRange.lowerBound)
         #expect(loaded.roamNudgeSnoozeMinutes == AttentionConfig.roamNudgeSnoozeRange.lowerBound)
         #expect(loaded.roamHotspotSSID == nil, "whitespace is not the name of a network")
 
-        let absurd = Data(#"{"roamBatteryThreshold": 200, "roamNudgeSnoozeMinutes": 99999}"#.utf8)
+        let absurd = Data(#"{"roamNudgeSnoozeMinutes": 99999}"#.utf8)
         let capped = try JSONCoding.decoder.decode(AttentionConfig.self, from: absurd).validated()
-        #expect(capped.roamBatteryThreshold == RoamPolicy.thresholdRange.upperBound)
         #expect(capped.roamNudgeSnoozeMinutes == AttentionConfig.roamNudgeSnoozeRange.upperBound)
 
-        // The clamp must be a no-op on the shipped defaults, or the defaults are wrong.
+        // Validation must be a no-op on the shipped defaults, or the defaults are wrong.
         #expect(AttentionConfig.default.validated() == AttentionConfig.default)
     }
 }

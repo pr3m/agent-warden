@@ -85,6 +85,22 @@ final class PowerLeaseClient {
     /// is honest, and suppressing it would not be.
     var onLost: (() -> Void)?
 
+    /// Called on the main thread each time the daemon confirms a renewal — that is, every
+    /// `PowerLease.renewInterval` (10s) for as long as the lease is held.
+    ///
+    /// **This is the only cadence in the app that is actually tied to the lease**, and it exists
+    /// so the holder can hang work on it. The renew timer is a `.strict` `DispatchSourceTimer`,
+    /// which overrides the system's minimum leeway — so unlike the app's own sweep, driven by a
+    /// `Timer` on the main run loop with a two-second tolerance, this keeps its cadence while the
+    /// app sits with no windows, nothing frontmost and the display off. That is exactly the
+    /// state roam runs in, and exactly when a battery guard riding a slower or user-editable
+    /// clock would stop looking.
+    ///
+    /// Same rules as `onLost`: set it before the first `acquire()`, main thread only, no lock.
+    /// It fires only on a **confirmed** `ok` — a refused renewal reports through `onLost`
+    /// instead, and never through both.
+    var onRenewed: (() -> Void)?
+
     /// Serializes the descriptor, `isHolding`, the timer, and the wire. `PowerLeaseClient`
     /// has no lock of its own; this queue is the lock.
     private let queue = DispatchQueue(label: "dev.agentwarden.roam.lease")
@@ -446,6 +462,10 @@ final class PowerLeaseClient {
                 DispatchQueue.main.async { [weak self] in self?.onLost?() }
                 return
             }
+            // The daemon confirmed it. Hopped the same way and for the same reason as the loss
+            // above: a `sync` here would deadlock against a caller blocked in `acquire()` or
+            // `release()` on this very queue.
+            DispatchQueue.main.async { [weak self] in self?.onRenewed?() }
         }
         timer.resume()
         renewTimer = timer
