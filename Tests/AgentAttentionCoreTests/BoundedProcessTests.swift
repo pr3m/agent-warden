@@ -12,9 +12,9 @@ import Testing
 struct BoundedProcessTests {
     private let shell = "/bin/sh"
 
-    private func run(_ script: String, timeout: TimeInterval, cap: Int = 64 * 1024) -> (GitBranchProbe.ProcessOutcome, TimeInterval) {
+    private func run(_ script: String, timeout: TimeInterval, cap: Int = 64 * 1024) -> (BoundedProcess.Outcome, TimeInterval) {
         let started = Date()
-        let outcome = GitBranchProbe.runBounded(
+        let outcome = BoundedProcess.run(
             executable: shell, arguments: ["-c", script], timeout: timeout, maximumOutputBytes: cap)
         return (outcome, Date().timeIntervalSince(started))
     }
@@ -113,7 +113,7 @@ struct BoundedProcessTests {
 
     @Test("An executable that is not there is a launch failure, not a timeout")
     func missingExecutable() {
-        let outcome = GitBranchProbe.runBounded(
+        let outcome = BoundedProcess.run(
             executable: "/nonexistent-\(UUID().uuidString)", arguments: [], timeout: 1)
         #expect(outcome.launchFailed)
         #expect(!outcome.timedOut)
@@ -124,7 +124,7 @@ struct BoundedProcessTests {
         // A child that writes its own pid, then hangs. After the deadline it must be gone.
         let marker = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("agent-warden-pid-\(UUID().uuidString)")
-        let outcome = GitBranchProbe.runBounded(
+        let outcome = BoundedProcess.run(
             executable: shell,
             arguments: ["-c", "echo $$ > \(marker.path); sleep 60"],
             timeout: 0.5
@@ -140,10 +140,43 @@ struct BoundedProcessTests {
         #expect(kill(pid, 0) != 0 || errno == ESRCH, "and it is not still running")
     }
 
+    @Test("A child that ignores SIGTERM is killed and then reaped, leaving no zombie")
+    func killedChildIsReaped() throws {
+        // `nothingSurvivesTheTimeout` above proves the child stopped running. It does not prove it
+        // was *reaped*: `kill(pid, 0)` succeeds against a zombie, which is still a process-table
+        // entry, so that check passes either way. This is the other half, and it matters because
+        // the power daemon now runs `pmset` through here on every acquire, renew-expiry and
+        // release — a leaked zombie per wedged call would accumulate for as long as the daemon
+        // lives, which is until the machine reboots.
+        //
+        // `trap '' TERM` forces the harder path: `terminate()` does nothing, so the child only
+        // dies to the SIGKILL that follows.
+        let marker = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("agent-warden-reap-\(UUID().uuidString)")
+        let outcome = BoundedProcess.run(
+            executable: shell,
+            arguments: ["-c", "trap '' TERM; echo $$ > \(marker.path); sleep 60"],
+            timeout: 0.5
+        )
+        #expect(outcome.timedOut)
+
+        Thread.sleep(forTimeInterval: 0.5)
+        let text = (try? String(contentsOf: marker, encoding: .utf8)) ?? ""
+        try? FileManager.default.removeItem(at: marker)
+        let pid = Int32(text.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0
+        #expect(pid > 0, "the child did start")
+
+        let listing = BoundedProcess.run(executable: "/bin/ps",
+                                         arguments: ["-o", "stat=", "-p", "\(pid)"], timeout: 5)
+        let state = String(decoding: listing.stdout, as: UTF8.self)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        #expect(!state.hasPrefix("Z"), "it is still in the table as a zombie: \(state)")
+    }
+
     @Test("The probe reports a timeout rather than a branch when git does not answer")
     func probeSurfacesTheTimeout() {
         // Through the public entry point, with the real classification path.
-        let outcome = GitBranchProbe.runBounded(executable: shell, arguments: ["-c", "sleep 60"], timeout: 0.4)
+        let outcome = BoundedProcess.run(executable: shell, arguments: ["-c", "sleep 60"], timeout: 0.4)
         #expect(outcome.timedOut)
         let fact = BranchFact.git(.timedOut, path: "/w/alpha", at: Date())
         #expect(fact.state == "timedOut")

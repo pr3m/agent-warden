@@ -41,6 +41,16 @@ enum PowerdLog {
 /// duration (correct — the lease must not advance while the machine's state is in flight),
 /// and nothing may call back into `queue.sync` from inside it.
 ///
+/// **And therefore every `pmset` call must be bounded.** Scheduling the expiry timer on the
+/// state queue is what makes it independent of any one connection's read loop — but it also
+/// means the timer inherits whatever that queue is blocked on. A `pmset` that never returns
+/// would stop the timer firing, block `connectionClosed` so a disconnect released nothing,
+/// and pile every further request into `queue.sync` behind it, leaving `SleepDisabled` set
+/// with nothing left able to clear it and a hung daemon `launchd` will not restart. That is
+/// the same failure the timer's own comment reasons about below, arriving from the other
+/// side, and the answer is `PmsetControl.deadline`: every invocation is killed at 1.5s and
+/// reported as `.pmsetFailed`, so the queue is always free again in bounded time.
+///
 /// `@unchecked Sendable` because that queue, not the compiler, is what makes this safe:
 /// connections are served on their own threads and all of them reach this object.
 final class PowerDaemon: @unchecked Sendable {

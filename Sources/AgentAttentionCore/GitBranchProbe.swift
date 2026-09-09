@@ -97,6 +97,10 @@ public struct BranchFact: Codable, Sendable, Equatable {
 ///   mount answers `timedOut` rather than hanging the app.
 /// - Arguments are passed as an argument vector, never through a shell, so a path containing
 ///   spaces, quotes or `$` is just a path.
+///
+/// The deadline, the concurrent pipe drain and the terminate-then-kill all live in
+/// `BoundedProcess`, which is where they were written and where they are tested. They moved out of
+/// this type once the power daemon's `pmset` calls needed the same three guarantees.
 public enum GitBranchProbe {
     public static let defaultTimeout: TimeInterval = 2.0
     static let executable = "/usr/bin/git"
@@ -123,7 +127,7 @@ public enum GitBranchProbe {
         environment["GIT_TERMINAL_PROMPT"] = "0"
         environment["GIT_PAGER"] = "cat"
 
-        let outcome = runBounded(
+        let outcome = BoundedProcess.run(
             executable: executable,
             arguments: ["-C", directory, "--no-optional-locks", "branch", "--show-current"],
             environment: environment,
@@ -132,150 +136,6 @@ public enum GitBranchProbe {
         if outcome.launchFailed { return .unavailable }
         if outcome.timedOut { return .timedOut }
         return classify(status: outcome.status, stdout: outcome.stdout, stderr: outcome.stderr)
-    }
-
-    /// What a bounded run produced.
-    public struct ProcessOutcome: Sendable, Equatable {
-        public var status: Int32
-        public var stdout: Data
-        public var stderr: Data
-        public var timedOut: Bool
-        public var launchFailed: Bool
-        /// True when the child printed more than we were willing to hold. The excess was read and
-        /// thrown away, so the child never blocks on a full pipe.
-        public var outputTruncated: Bool
-    }
-
-    /// Run a child process with a deadline that is actually enforced, and pipes that cannot deadlock.
-    ///
-    /// Three things have to be true at once, and getting any of them wrong makes the timeout a
-    /// decoration:
-    ///
-    /// - **The deadline starts before the child does.** Anything measured after a blocking read is
-    ///   measuring the wrong thing.
-    /// - **Both pipes drain concurrently**, via readability handlers. Reading stdout to the end and
-    ///   *then* stderr deadlocks the moment the child fills stderr while we wait on stdout — and
-    ///   reading "to the end" of a hung child never returns at all, so no later deadline can help.
-    /// - **Output is bounded**, but the excess is still read and discarded rather than left in the
-    ///   pipe. A child blocked writing into a full pipe is a child that never exits.
-    ///
-    /// On expiry the child is terminated, then killed. Nothing is left running.
-    public static func runBounded(
-        executable: String,
-        arguments: [String],
-        environment: [String: String]? = nil,
-        timeout: TimeInterval,
-        maximumOutputBytes: Int = 64 * 1024
-    ) -> ProcessOutcome {
-        // Before anything else. This is the whole point of a deadline.
-        let deadline = DispatchTime.now() + .milliseconds(Int(max(0.05, timeout) * 1000))
-
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: executable)
-        process.arguments = arguments
-        if let environment { process.environment = environment }
-        process.standardInput = FileHandle.nullDevice
-
-        let out = Pipe()
-        let err = Pipe()
-        process.standardOutput = out
-        process.standardError = err
-
-        let lock = NSLock()
-        var outData = Data()
-        var errData = Data()
-        var truncated = false
-
-        // Exit and end-of-output are two different events, and they do not arrive in a fixed order.
-        // A short-lived `git` can exit before its last bytes are delivered, so tearing the pipes
-        // down on termination alone loses the branch name and the reading looks detached. Both
-        // pipes are therefore drained to EOF as well — inside the same deadline, never after it.
-        let drained = DispatchSemaphore(value: 0)
-        let eofLock = NSLock()
-        var eofCount = 0
-        func noteEOF() {
-            eofLock.lock()
-            eofCount += 1
-            let done = eofCount == 2
-            eofLock.unlock()
-            if done { drained.signal() }
-        }
-
-        func drain(_ pipe: Pipe, into keep: @escaping (Data) -> Void) {
-            pipe.fileHandleForReading.readabilityHandler = { handle in
-                let chunk = handle.availableData
-                guard !chunk.isEmpty else {
-                    handle.readabilityHandler = nil
-                    noteEOF()
-                    return
-                }
-                lock.lock()
-                keep(chunk)
-                lock.unlock()
-            }
-        }
-        drain(out) { chunk in
-            if outData.count < maximumOutputBytes {
-                outData.append(chunk.prefix(maximumOutputBytes - outData.count))
-                if outData.count >= maximumOutputBytes { truncated = true }
-            } else {
-                truncated = true      // read and discarded: the child must never block on a full pipe
-            }
-        }
-        drain(err) { chunk in
-            if errData.count < maximumOutputBytes {
-                errData.append(chunk.prefix(maximumOutputBytes - errData.count))
-            } else {
-                truncated = true
-            }
-        }
-
-        let finished = DispatchSemaphore(value: 0)
-        process.terminationHandler = { _ in finished.signal() }
-
-
-        do {
-            try process.run()
-        } catch {
-            out.fileHandleForReading.readabilityHandler = nil
-            err.fileHandleForReading.readabilityHandler = nil
-            return ProcessOutcome(status: -1, stdout: Data(), stderr: Data(),
-                                  timedOut: false, launchFailed: true, outputTruncated: false)
-        }
-
-        var timedOut = false
-        if finished.wait(timeout: deadline) == .timedOut {
-            timedOut = true
-            process.terminate()
-            if finished.wait(timeout: .now() + .milliseconds(250)) == .timedOut {
-                kill(process.processIdentifier, SIGKILL)
-                _ = finished.wait(timeout: .now() + .milliseconds(250))
-            }
-        }
-
-        // The child has exited (or been killed). Give the pipes the rest of the budget to deliver
-        // what is already written before tearing them down. Still bounded: this waits on EOF with a
-        // deadline, never on a blocking read-to-end.
-        if !timedOut {
-            _ = drained.wait(timeout: deadline)
-        }
-
-        out.fileHandleForReading.readabilityHandler = nil
-        err.fileHandleForReading.readabilityHandler = nil
-        try? out.fileHandleForReading.close()
-        try? err.fileHandleForReading.close()
-
-        lock.lock()
-        let capturedOut = outData
-        let capturedErr = errData
-        let wasTruncated = truncated
-        lock.unlock()
-
-        return ProcessOutcome(
-            status: timedOut ? -1 : process.terminationStatus,
-            stdout: capturedOut, stderr: capturedErr,
-            timedOut: timedOut, launchFailed: false, outputTruncated: wasTruncated
-        )
     }
 
     /// Separated so every outcome can be exercised without spawning anything.
