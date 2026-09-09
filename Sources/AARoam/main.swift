@@ -45,9 +45,20 @@ case "indicator":
         RoamIndicator.text(state: loadState(), probe: liveness).utf8))
 
 case "status":
-    if let state = loadState(), state.isLive(probe: liveness) {
-        let minutes = Int(Date().timeIntervalSince(state.startedAt) / 60)
-        print("roam on — \(minutes) min, owner pid \(state.ownerPID)")
+    if let state = loadState() {
+        if state.isLive(probe: liveness) {
+            let minutes = Int(Date().timeIntervalSince(state.startedAt) / 60)
+            print("roam on — \(minutes) min, owner pid \(state.ownerPID)")
+        } else {
+            // Not the same fact as "no roam.json at all", and worth saying so: this is exactly
+            // the debugging distinction `RoamState.isLive` exists to make. `roam off` still
+            // leads — this must never read as roam being on — but a file naming a dead owner, a
+            // recycled pid, a stale lease, or a session already marked inactive is evidence of
+            // *something*, and collapsing it into silence is the one thing "for debugging" (see
+            // the usage text below) cannot afford to do.
+            print("roam off (a roam.json exists but is not live — dead owner, recycled pid, "
+                  + "stale lease, or the session was already marked inactive)")
+        }
     } else {
         print("roam off")
     }
