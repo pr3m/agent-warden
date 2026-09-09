@@ -55,6 +55,13 @@ if [ "$SETTINGS" != "$DEFAULT_SETTINGS" ]; then
   exit 0
 fi
 
+# The power helper is a machine-level install, same as the login item and PATH links below:
+# tied to the real user-level uninstall, not to whichever settings file was named above. It also
+# releases any sleep block before removing the daemon that would otherwise have cleared it.
+echo
+echo "== Power helper (needed for lid-closed roam) =="
+bash "$ROOT/Scripts/install-powerd.sh" uninstall || true
+
 OWNERSHIP="$(/usr/bin/python3 "$ROOT/Scripts/launch-agent.py" check "$LAUNCH_AGENT" "$LAUNCH_LABEL" "$APP_BINARY")"
 if [ "$OWNERSHIP" = "ours" ]; then
   echo

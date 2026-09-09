@@ -24,6 +24,7 @@ swift build -c "$CONFIG" --product aa-emit
 swift build -c "$CONFIG" --product aa-status
 swift build -c "$CONFIG" --product aa-bridge
 swift build -c "$CONFIG" --product aa-session
+swift build -c "$CONFIG" --product aa-powerd
 BIN="$(swift build -c "$CONFIG" --show-bin-path)"
 
 echo "Assembling ${APP}…"
@@ -38,6 +39,10 @@ cp "$BIN/aa-status" "$APP/Contents/MacOS/aa-status"
 # directory on the user's behalf.
 cp "$BIN/aa-bridge" "$APP/Contents/MacOS/aa-bridge"
 cp "$BIN/aa-session" "$APP/Contents/MacOS/aa-session"
+# Bundled so install.sh has a copy to hand to install-powerd.sh — and, like aa-bridge, **not**
+# started by the app itself. This binary only ever runs as root under launchd, placed there by
+# the installer, which copies it out of the bundle into a root-owned, non-user-writable home.
+cp "$BIN/aa-powerd" "$APP/Contents/MacOS/aa-powerd"
 
 # plistlib rather than a heredoc: the bundle path is interpolated, and a path containing an
 # ampersand would produce an invalid plist if pasted in raw.
@@ -78,6 +83,7 @@ echo "  hook binary : $APP/Contents/MacOS/aa-emit"
 echo "  status CLI  : $APP/Contents/MacOS/aa-status"
 echo "  bridge CLI  : $APP/Contents/MacOS/aa-bridge  (never auto-started; needs explicit --approve)"
 echo "  session relay: $APP/Contents/MacOS/aa-session  (runs inside a Ghostty tab; started only by aa-bridge)"
+echo "  power helper : $APP/Contents/MacOS/aa-powerd  (never run from here; install.sh copies it root-owned into /Library)"
 echo
 # A build that stops at "it compiled" leaves two different facts — that it built, and that it is the
 # thing running on your machine. Unless something is explicitly driving this script (the pipeline

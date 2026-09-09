@@ -29,6 +29,7 @@ EMIT="$APP/Contents/MacOS/aa-emit"
 STATUS="$APP/Contents/MacOS/aa-status"
 LAUNCH_AGENT="$HOME/Library/LaunchAgents/dev.agentwarden.plist"
 LAUNCH_LABEL="dev.agentwarden"
+POWERD_LABEL="dev.agentwarden.powerd"
 
 SETTINGS="$HOME/.claude/settings.json"
 DRY_RUN=""
@@ -60,6 +61,14 @@ fi
 
 echo "== Wiring Claude Code hooks =="
 /usr/bin/python3 "$ROOT/Scripts/manage-hooks.py" install --settings "$SETTINGS" --emit-path "$EMIT" $DRY_RUN
+
+echo
+echo "== Power helper (needed for lid-closed roam) =="
+if [ -n "$DRY_RUN" ]; then
+  echo "would install $POWERD_LABEL from $APP/Contents/MacOS/aa-powerd"
+else
+  bash "$ROOT/Scripts/install-powerd.sh" install "$APP/Contents/MacOS/aa-powerd"
+fi
 
 if [ -n "$DRY_RUN" ]; then
   exit 0
