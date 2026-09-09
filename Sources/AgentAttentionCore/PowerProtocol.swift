@@ -70,11 +70,27 @@ public enum PowerRequest: Sendable, Equatable {
     }
 }
 
+/// What the daemon sends back to the app in response to a request. The daemon reports
+/// what it actually observes, not what it intended: `SleepDisabled` carries the *read-back*
+/// of the power setting from `pmset`, not a bool that says "we tried to set it". This
+/// asymmetry is deliberate — the app cannot trust its own writes.
+///
+/// `parse` does not guard against control characters (unlike `PowerRequest.parse`),
+/// but this is safe: every accept path requires an exact field match (`ok`, `held`, `free`,
+/// `error`) followed by optional Int or rawValue parsing. A control character in the line
+/// breaks both the field match and any Int/rawValue conversion, so the input is rejected
+/// before any case succeeds.
 public enum PowerReply: Sendable, Equatable {
+    /// The daemon accepted the request and has nothing more to report.
     case ok
+    /// The daemon accepted the request and is reporting its protocol version.
     case okVersion(Int)
+    /// The daemon holds the lease; the app will lose it after this many seconds.
+    /// The read-back value shows what `pmset` actually recorded.
     case held(secondsRemaining: Int, setting: SleepDisabled)
+    /// The daemon does not hold the lease; this is the current machine-wide setting.
     case free(setting: SleepDisabled)
+    /// The request failed; the daemon is reporting why.
     case error(PowerError)
 
     public var wire: String {
