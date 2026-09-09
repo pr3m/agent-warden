@@ -35,9 +35,12 @@ public enum RoamGuardAction: Sendable, Equatable {
 /// Pure, because the alternative way to test it is to flatten a battery. The caller reads
 /// the machine and applies the action.
 public enum RoamPolicy {
-    /// Sane bounds for a hand-edited config. The minimum is 1 because a threshold of 0
-    /// would sleep immediately when the battery reads 0% (or sleep preventively when it
-    /// reads 1%), giving no margin — we want to let it fall further before intervening.
+    /// Sane bounds for a hand-edited config. The minimum is 1 because the guard fires when
+    /// `percent <= threshold`. A threshold of 0 would fire only when the battery reads exactly
+    /// 0%, leaving no margin to write state and sleep cleanly — the guard would activate at the
+    /// moment all power is already gone. A threshold of 1 is the smallest value that provides
+    /// any buffer, firing at both 1% and 0%. (A threshold of 0 or any negative value are
+    /// equivalent in effect since the guard can only see percentages 0 and above.)
     /// The maximum is 50 because a threshold of 200 would fire on every tick, defeating
     /// the purpose of a threshold.
     public static let thresholdRange = 1...50
