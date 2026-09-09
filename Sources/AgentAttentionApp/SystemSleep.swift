@@ -42,9 +42,9 @@ enum SystemSleep {
         // MACH_PORT_NULL is what the header asks for here ("Just pass in MACH_PORT_NULL for
         // master device port"); it means the default, not a missing argument.
         let port = IOPMFindPowerManagement(mach_port_t(MACH_PORT_NULL))
-        // A zero handle is the failure return, and passing it on would be a call into the
-        // kernel with a port that was never opened.
-        guard port != 0 else { return false }
+        // `IO_OBJECT_NULL` is the failure return, and passing it on would be a call into
+        // the kernel with a port that was never opened.
+        guard port != IO_OBJECT_NULL else { return false }
         // The header requires this handle to be released with `IOServiceClose`. `defer`
         // rather than a call placed after the sleep request, so that a future early return
         // added between here and the end of the function cannot leak a mach port.

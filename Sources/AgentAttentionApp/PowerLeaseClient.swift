@@ -116,19 +116,31 @@ final class PowerLeaseClient {
 
     /// Whether the lease is held, as of the instant this is read.
     ///
+    /// **This blocks, and must not be called from the main thread.** It is not a cheap flag
+    /// read: it waits for `queue`, so a renewal already in flight holds it up for as long as
+    /// that exchange takes — up to `exchangeDeadline` plus a slice. Reading it while
+    /// rendering a menu would freeze the UI for seconds at a time. Cache it off-main and
+    /// redraw from `onLost` instead.
+    ///
     /// A snapshot, not a subscription: the daemon can take the lease away between this
-    /// answer and the caller acting on it, which is what `onLost` is for. Must not be
-    /// called from `queue` — nothing that runs there is reachable from outside this type,
-    /// so it cannot be.
+    /// answer and the caller acting on it, which is what `onLost` is for. Must not be called
+    /// from `queue` either — nothing that runs there is reachable from outside this type, so
+    /// that cannot happen by accident.
     var holding: Bool { queue.sync { isHolding } }
 
     /// Take the lease, or report why not, leaving nothing half-open either way.
     ///
-    /// Synchronous, and therefore briefly blocking: two exchanges, each bounded by
-    /// `exchangeDeadline`, so at worst about twelve seconds. In practice this is a local
-    /// socket and two `pmset` calls and it returns in well under a second; the bound only
-    /// bites against a daemon that has wedged, and a visible stall there is better than a
-    /// lease this app believes in and the machine does not.
+    /// **Precondition: not the main thread.** This blocks for the length of two exchanges,
+    /// each bounded by `exchangeDeadline`, so up to about twelve seconds. The nominal path
+    /// is not free either: the daemon answers `acquire` only after two `pmset` fork/execs,
+    /// behind a serial state queue it shares with up to seven other connections, so hundreds
+    /// of milliseconds is the *expected* cost, not the pathological one. This app runs
+    /// `.accessory`, so its run loop is its only UI thread and every one of those
+    /// milliseconds is frozen UI. Call this off-main and hop the `Result` back.
+    ///
+    /// The deadline is not the thing to shorten if that stall is unwelcome — a shorter one
+    /// would start failing legitimate `pmset` round trips, which is a worse failure than a
+    /// slow one. The shape is what to change.
     ///
     /// Idempotent: calling it while already holding returns success without opening a
     /// second connection, which would leak the first descriptor and leave the daemon
@@ -145,14 +157,22 @@ final class PowerLeaseClient {
     /// off the answer changes nothing, so this is `@discardableResult` — the value is there
     /// for the caller that needs it, not a demand on the one that does not.
     ///
-    /// `true` means *this client is not holding the block*: either the daemon acknowledged
-    /// the release, or there was nothing to release. It is not a claim about the
-    /// machine-wide setting, which only the daemon can read.
+    /// `true` means one of exactly two things: the daemon **confirmed** the release, or this
+    /// client was not holding a lease to begin with. Anything else is `false` — including,
+    /// and this is the case worth stating, a lease that has already expired: the daemon
+    /// answers `release` on a lease it no longer tracks with `error nolease`, which is not
+    /// `.ok` and so reports `false` here.
     ///
-    /// Synchronous like `acquire()`, and bounded the same way: one exchange, so at worst
-    /// about six seconds against a daemon that has stopped answering. The connection is torn
-    /// down either way — an unanswered release still ends the lease, because the daemon drops
-    /// one whose holder disconnects.
+    /// So `false` does not mean "the block is definitely still set" and `true` does not mean
+    /// "the block is definitely clear". Neither is a claim about the machine-wide setting,
+    /// which only the daemon can read. A caller deciding whether to sleep the machine should
+    /// read `false` as *unconfirmed* and refuse to sleep on it — the conservative direction,
+    /// because sleeping a machine that will not stay asleep is worse than not sleeping it.
+    ///
+    /// **Precondition: not the main thread**, for the same reason as `acquire()`. One
+    /// exchange, so at worst about six seconds against a daemon that has stopped answering.
+    /// The connection is torn down either way — an unanswered release still ends the lease,
+    /// because the daemon drops one whose holder disconnects.
     @discardableResult
     func release() -> Bool {
         return queue.sync {
@@ -245,14 +265,28 @@ final class PowerLeaseClient {
         // option is the better fix regardless: it cannot be undone by another component
         // changing the process-wide disposition back.
         var enabled: Int32 = 1
-        setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &enabled, socklen_t(MemoryLayout<Int32>.size))
+        let noSignal = setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE,
+                                  &enabled, socklen_t(MemoryLayout<Int32>.size))
         // Per-call deadlines on both directions. Without them a wedged daemon would block
         // this queue for ever, and the renew timer — which runs on that same queue — would
         // never fire again, so the app would go on believing it held a lease that had long
         // since expired.
         var slice = PowerLeaseClient.ioSlice
-        setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &slice, socklen_t(MemoryLayout<timeval>.size))
-        setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &slice, socklen_t(MemoryLayout<timeval>.size))
+        let readDeadline = setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO,
+                                      &slice, socklen_t(MemoryLayout<timeval>.size))
+        let writeDeadline = setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO,
+                                       &slice, socklen_t(MemoryLayout<timeval>.size))
+        // Checked rather than hoped for. None of the three can realistically fail on a
+        // socket this function created two statements ago — the descriptor is valid, all
+        // three are `SOL_SOCKET` options Darwin implements, and the sizes are exact — but
+        // the comments above claim two protections, and a claim worth writing down is worth
+        // verifying. A socket that could not be given them is not one to hand the machine's
+        // sleep behaviour to: without `SO_NOSIGPIPE` a restarting daemon kills this process,
+        // and without the deadlines every "bounded" exchange below is unbounded.
+        guard noSignal == 0, readDeadline == 0, writeDeadline == 0 else {
+            teardown()
+            return false
+        }
 
         var address = sockaddr_un()
         address.sun_family = sa_family_t(AF_UNIX)
@@ -267,13 +301,48 @@ final class PowerLeaseClient {
                         source, capacity)
             }
         }
+        // `connect` is the one call in this file that `SO_SNDTIMEO` does not bound, and
+        // leaving it blocking would put a hole straight through this type's thesis. For an
+        // AF_UNIX stream socket a full listen backlog makes `connect` wait for a slot — and
+        // the daemon's accept loop takes its state queue to hand out a connection id
+        // (`claimConnectionID`), so a daemon wedged on that queue stops accepting, the
+        // backlog fills, and a blocking `connect` here would hold `queue` for ever and stop
+        // the renew timer that runs on it. That is the wedged-daemon case this file exists
+        // to survive, arriving through the front door.
+        //
+        // So: connect non-blocking, wait on `poll` against the same deadline every other
+        // exchange uses, then put the socket back into blocking mode — every read and write
+        // below depends on blocking-plus-`SO_RCVTIMEO` semantics, and left non-blocking they
+        // would spin hot instead of waiting.
+        let openFlags = fcntl(fd, F_GETFL, 0)
+        guard openFlags >= 0, fcntl(fd, F_SETFL, openFlags | O_NONBLOCK) == 0 else {
+            teardown()
+            return false
+        }
         let size = socklen_t(MemoryLayout<sockaddr_un>.size)
         let connected = withUnsafePointer(to: &address) { pointer in
             pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
                 Darwin.connect(fd, $0, size)
             }
         }
-        guard connected == 0 else {
+        if connected != 0 {
+            // Captured on the very next line, before anything else runs: `errno` is only
+            // meaningful until the next call that might set it, and building a `Date` for
+            // the deadline first would be exactly such a call.
+            let code = errno
+            // A local socket usually connects or refuses immediately; `EINPROGRESS` is the
+            // backlog case above and the only one worth waiting out.
+            guard code == EINPROGRESS else {
+                teardown()
+                return false
+            }
+            let deadline = Date().addingTimeInterval(PowerLeaseClient.exchangeDeadline)
+            guard awaitConnection(by: deadline) else {
+                teardown()
+                return false
+            }
+        }
+        guard fcntl(fd, F_SETFL, openFlags) == 0 else {
             teardown()
             return false
         }
@@ -285,6 +354,33 @@ final class PowerLeaseClient {
             return false
         }
         return true
+    }
+
+    /// Wait for a non-blocking `connect` to finish, or give up at the deadline.
+    ///
+    /// Caller must already be on `queue`, with the socket still in non-blocking mode.
+    private func awaitConnection(by deadline: Date) -> Bool {
+        while true {
+            let remaining = deadline.timeIntervalSinceNow
+            guard remaining > 0 else { return false }
+            var watched = pollfd(fd: fd, events: Int16(POLLOUT), revents: 0)
+            let ready = poll(&watched, 1, Int32(remaining * 1000))
+            if ready < 0 {
+                // A signal is not an answer. Anything else is.
+                if errno == EINTR { continue }
+                return false
+            }
+            // Zero means the deadline passed with the socket still not writable.
+            guard ready > 0 else { return false }
+            // Writable is not the same as connected: a refusal also wakes `poll`, and the
+            // actual outcome is in `SO_ERROR`. Reading it is the only way to tell the two
+            // apart — treating writability as success would hand back a dead socket.
+            var failure: Int32 = 0
+            var length = socklen_t(MemoryLayout<Int32>.size)
+            guard getsockopt(fd, SOL_SOCKET, SO_ERROR, &failure, &length) == 0,
+                  failure == 0 else { return false }
+            return true
+        }
     }
 
     /// Stop renewing and close the connection. Idempotent.
@@ -314,9 +410,38 @@ final class PowerLeaseClient {
     /// dropped, so a momentarily busy machine does not lose a roam session over one late
     /// timer.
     ///
+    /// **`.strict`, and that flag is load-bearing.** By default this timer is deferrable:
+    /// `dispatch/source.h` says of `dispatch_source_set_timer` that "any fire of the timer
+    /// may be delayed by the system in order to improve power consumption and system
+    /// performance", with "the lower limit ... under the control of the system". During roam
+    /// this app is the exact profile that invites such deferral — no windows, not frontmost,
+    /// display off, nothing user-visible happening. A heartbeat deferred past the daemon's
+    /// 45-second expiry means the daemon clears `SleepDisabled`, the closed lid sleeps the
+    /// machine, and the user's session dies — the precise outcome this whole feature exists
+    /// to prevent, arriving silently at the only moment it matters, with `onLost` reporting
+    /// it only whenever the timer eventually runs. `DISPATCH_TIMER_STRICT` is the documented
+    /// opt-out: "the system should make a best effort to strictly observe the leeway value
+    /// specified ... even if that value is smaller than the default leeway that would be
+    /// applied to the timer otherwise."
+    ///
+    /// That header also cautions that the flag "may override power-saving techniques
+    /// employed by the system and cause higher power consumption ... only when absolutely
+    /// necessary". It is warranted here and the cost is negligible: this fires at 0.1 Hz and
+    /// does six bytes of local socket I/O, against a feature whose failure mode is losing
+    /// the user's work.
+    ///
+    /// **What `.strict` does not settle.** It addresses deferral of *this timer*. Whether an
+    /// `.accessory` app is throttled or suspended wholesale under App Nap is a separate
+    /// question, and a process-wide opt-out (`ProcessInfo.beginActivity`) is session-scoped
+    /// state that belongs with the roam lifecycle rather than in a socket client. See the
+    /// Task 9 report for the evidence and the recommendation. What is settled is that the
+    /// idle-sleep assertion does *not* cover this: `IOPMLib.h` scopes
+    /// `kIOPMAssertPreventUserIdleSystemSleep` to "prevents the system from sleeping
+    /// automatically due to a lack of user activity" and says nothing about scheduling.
+    ///
     /// Caller must already be on `queue`.
     private func startRenewing() {
-        let timer = DispatchSource.makeTimerSource(queue: queue)
+        let timer = DispatchSource.makeTimerSource(flags: .strict, queue: queue)
         timer.schedule(deadline: .now() + PowerLease.renewInterval,
                        repeating: PowerLease.renewInterval)
         timer.setEventHandler { [weak self] in

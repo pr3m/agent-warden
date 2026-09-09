@@ -10,11 +10,19 @@ import IOKit.pwr_mgt
 /// nobody can see — against a feature whose whole promise is that the work outlives the
 /// walk to the café.
 ///
-/// **This is half of roam, never all of it.** An idle assertion stops the *idle* timer; it
-/// does not stop the lid. Closing the lid still sleeps the machine unless the machine-wide
-/// `SleepDisabled` setting is on, and only root can write that — which is what
-/// `PowerLeaseClient` and the daemon exist for. Anything that takes this assertion and
-/// calls the result "roam" is telling the user a lie the lid will disprove.
+/// **This is half of roam, never all of it**, and the SDK says so outright. `IOPMLib.h` on
+/// `kIOPMAssertPreventUserIdleSystemSleep`: it "will prevent the system from sleeping due to
+/// a period of idle user activity", but "the system may still sleep for **lid close**, Apple
+/// menu, low battery, or other sleep reasons." Closing the lid still sleeps the machine
+/// unless the machine-wide `SleepDisabled` setting is on, and only root can write that —
+/// which is what `PowerLeaseClient` and the daemon exist for. Anything that takes this
+/// assertion and calls the result "roam" is telling the user a lie the lid will disprove.
+///
+/// The same scoping is why this assertion cannot be relied on for anything *else* either.
+/// It is documented purely in terms of system idle sleep and says nothing about process
+/// scheduling, so it is no basis for assuming this process is exempt from the system's
+/// power-saving heuristics — see `PowerLeaseClient.startRenewing`, which opts its heartbeat
+/// out explicitly rather than assuming this covers it.
 ///
 /// **Why an assertion and not `caffeinate`.** The assertion dies with this process, which
 /// is the safe failure: a forked `caffeinate` outlives its owner and keeps a machine awake
@@ -51,7 +59,11 @@ final class SleepAssertion {
     func take() -> Bool {
         guard !held else { return true }
         let result = IOPMAssertionCreateWithName(
-            kIOPMAssertionTypePreventUserIdleSystemSleep as CFString,
+            // `kIOPMAssertionTypePreventUserIdleSystemSleep` is a `#define` alias for this
+            // one, and `IOPMLib.h` says of it: "This assertion type is identical to
+            // kIOPMAssertPreventUserIdleSystemSleep. Please use that instead." Same string
+            // on the wire, so this is a rename and not a behaviour change.
+            kIOPMAssertPreventUserIdleSystemSleep as CFString,
             IOPMAssertionLevel(kIOPMAssertionLevelOn),
             // This string is what `pmset -g assertions` prints next to the assertion, so it
             // names the app and the reason: whoever is wondering why their Mac will not
