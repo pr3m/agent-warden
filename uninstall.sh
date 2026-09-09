@@ -65,9 +65,34 @@ if [ "$SETTINGS" != "$DEFAULT_SETTINGS" ]; then
   echo "note: --settings names a file other than the user one, so the status line is left"
   echo "      alone. Run without --settings to remove it too."
 elif [ -n "$DRY_RUN" ]; then
-  /usr/bin/python3 "$ROOT/Scripts/manage-statusline.py" uninstall --settings "$SETTINGS" --dry-run
+  # Captured, not swallowed, same reasoning as the --write branch below: under set -e, an
+  # unguarded refusal here (the documented "statusLine.command has drifted" case) would abort
+  # the rest of this preview outright instead of still showing what the remaining steps would do.
+  if ! /usr/bin/python3 "$ROOT/Scripts/manage-statusline.py" uninstall --settings "$SETTINGS" --dry-run; then
+    echo "WARNING: status line preview reported a failure — see output above (most likely the" >&2
+    echo "         documented refusal when statusLine.command no longer matches Warden's" >&2
+    echo "         wrapper). This preview cannot show a restoration for it; continuing to show" >&2
+    echo "         what the rest of a real run would do." >&2
+  fi
 else
-  /usr/bin/python3 "$ROOT/Scripts/manage-statusline.py" uninstall --settings "$SETTINGS" --write
+  # Captured, not swallowed — the same pattern the power helper uses below, and for the same
+  # reason. do_uninstall in manage-statusline.py deliberately exits 1 rather than guess when
+  # statusLine.command has drifted since install; under set -e (line 23), an unguarded call left
+  # that exit code free to abort this entire script right here — skipping hooks removal, the
+  # login item, the PATH links, and worst of all the power-helper teardown further down, which
+  # releases a machine-wide sleep block held by a root daemon. Failing to restore a status line
+  # is a nuisance; leaving that daemon and its sleep block behind because of an unrelated
+  # statusline refusal is not, so this warns with exactly what is still wrong and how to finish
+  # it by hand, and lets every step after it still run.
+  if ! /usr/bin/python3 "$ROOT/Scripts/manage-statusline.py" uninstall --settings "$SETTINGS" --write; then
+    echo "WARNING: status line uninstall reported a failure — see output above (most likely the" >&2
+    echo "         documented refusal when statusLine.command no longer matches Warden's" >&2
+    echo "         wrapper). Your original status line was NOT restored, and Warden's wrapper" >&2
+    echo "         (~/.claude/bin/agent-warden-statusline.sh) is still installed and still" >&2
+    echo "         referenced by statusLine.command in $SETTINGS. Point statusLine.command back" >&2
+    echo "         at the wrapper and re-run:" >&2
+    echo "             ./Scripts/manage-statusline.py uninstall --settings $SETTINGS --write" >&2
+  fi
 fi
 
 echo
