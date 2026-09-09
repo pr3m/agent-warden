@@ -49,42 +49,63 @@ enum UICheck {
 
         bubble.apply(placement: .default, size: 56)
         bubble.show()
-        bubble.update(pendingCount: 0, unseenCount: 0, expanded: false)
+        bubble.update(pendingCount: 0, unseenCount: 0, expanded: false, roaming: false)
 
         check("the bubble is visible with nothing pending", bubble.isVisible)
-        check("the bubble is 56pt across", abs(bubble.frame.width - 56) < 1 && abs(bubble.frame.height - 56) < 1)
+        // The disc, not the window: the window is deliberately a halo margin larger on every side,
+        // and what the user configured and what they measure by eye is the circle.
+        check("the bubble is 56pt across",
+              abs(bubble.discFrame.width - 56) < 1 && abs(bubble.discFrame.height - 56) < 1)
+        check("the halo margin is outside the disc, not carved out of it",
+              abs(bubble.frame.width - (bubble.discFrame.width + BubbleGeometry.haloInset * 2)) < 0.01)
+        // The whole window, halo included — nothing of it may hang off the screen.
         check("the bubble sits inside the visible screen area", visible.contains(bubble.frame))
-        check("the default placement is bottom right", abs(bubble.frame.maxX - (visible.maxX - 24)) < 1)
+        check("the default placement is bottom right", abs(bubble.discFrame.maxX - (visible.maxX - 24)) < 1)
         check("the default placement clears the very corner",
               bubble.frame.minY > visible.minY + 60)
         check("no badge when nothing is pending", bubble.badgeIsHidden)
         check("the empty bubble claims only what it knows", bubble.accessibilityLabel.contains("No confirmed requests"))
 
-        bubble.update(pendingCount: 3, unseenCount: 3, expanded: false)
+        bubble.update(pendingCount: 3, unseenCount: 3, expanded: false, roaming: false)
         check("the badge appears when something is pending", !bubble.badgeIsHidden)
         check("the bubble announces the count", bubble.accessibilityLabel.contains("3 sessions waiting"))
         check("and says all of it is new", bubble.accessibilityLabel.contains("all new"))
 
         // The distinction the badge exists for: three still waiting, one of them new.
-        bubble.update(pendingCount: 3, unseenCount: 1, expanded: false)
+        bubble.update(pendingCount: 3, unseenCount: 1, expanded: false, roaming: false)
         check("the badge counts what is new, not what is waiting", bubble.badgeText == "1")
         check("and the quiet corner still carries the backlog", bubble.totalText == "3")
         check("said in words too", bubble.accessibilityLabel.contains("3 sessions waiting, 1 new"))
 
         // Everything seen: the badge goes out, the work does not.
-        bubble.update(pendingCount: 3, unseenCount: 0, expanded: false)
+        bubble.update(pendingCount: 3, unseenCount: 0, expanded: false, roaming: false)
         check("nothing new means no badge at all", bubble.badgeIsHidden)
         check("but the backlog is still shown", bubble.totalText == "3")
         check("and it says so rather than looking empty",
               bubble.accessibilityLabel.contains("none new since you looked"))
 
-        bubble.update(pendingCount: 3, unseenCount: 3, expanded: false)
+        bubble.update(pendingCount: 3, unseenCount: 3, expanded: false, roaming: false)
 
         bubble.debugPress()
         bubble.debugPress()
         check("pressing the bubble asks to toggle the panel", toggles == 2)
         check("the glyph and badge do not steal the click from the bubble",
               bubble.debugHitTestCentreIsWholeBubble && bubble.debugHitTestOverBadgeIsWholeBubble)
+        check("a click in the halo margin is nobody's — it falls through",
+              bubble.debugHitTestInHaloMarginIsNothing)
+
+        // Roam's own channel. It must be able to say "roaming" and "three waiting" at once, so the
+        // halo is checked while the pending border is already lit.
+        check("no halo when roam is off", !bubble.debugHaloIsPainted)
+        bubble.update(pendingCount: 3, unseenCount: 3, expanded: false, roaming: true)
+        check("roaming paints the halo", bubble.debugHaloIsPainted)
+        check("and says so, for anyone who cannot see it",
+              bubble.accessibilityLabel.contains("Roam is on."))
+        check("without losing the count the border is already carrying",
+              bubble.accessibilityLabel.contains("3 sessions waiting"))
+        bubble.update(pendingCount: 3, unseenCount: 3, expanded: false, roaming: false)
+        check("leaving roam puts the halo out", !bubble.debugHaloIsPainted)
+        check("and stops claiming it", !bubble.accessibilityLabel.contains("Roam is on."))
         check("the bubble tracks the cursor even when the window is not key",
               bubble.debugTrackingCoversCursor)
 
@@ -322,7 +343,9 @@ enum UICheck {
 
         check("the panel is on screen", visible.intersects(frame))
         check("the panel is fully inside the visible area", visible.contains(frame))
-        check("the panel is anchored to the bubble's edge", abs(frame.maxX - bubble.frame.maxX) < 1)
+        // The disc's edge, not the window's: the panel must hug the circle, not the transparent
+        // halo margin around it.
+        check("the panel is anchored to the bubble's edge", abs(frame.maxX - bubble.discFrame.maxX) < 1)
 
         // The "not read yet" dot. It answers "what is new here?" from the list itself, without
         // opening anything and without being reduced to one number on the bubble.
@@ -2101,7 +2124,8 @@ enum UICheck {
         var presentation = PanelPresentation()
 
         func applyPresentation() {
-            bubble.update(pendingCount: items.count, unseenCount: items.count, expanded: presentation.isExpanded)
+            bubble.update(pendingCount: items.count, unseenCount: items.count,
+                          expanded: presentation.isExpanded, roaming: false)
             if presentation.isExpanded {
                 panel.render(items: items, sessions: sessions, snoozedCount: 0, maxVisible: 4,
                              now: now, anchor: bubble.frame)
@@ -2252,7 +2276,7 @@ enum UICheck {
         panel.flash("", seconds: 0.01)
         panel.render(items: items, sessions: sessions, snoozedCount: 2, maxVisible: 4, now: now,
                      anchor: bubble.frame)
-        bubble.update(pendingCount: 3, unseenCount: 3, expanded: false)
+        bubble.update(pendingCount: 3, unseenCount: 3, expanded: false, roaming: false)
 
         let backdrops = Readability.backdrops()
         guard let panelShot = Readability.snapshot(panel.debugContentView),

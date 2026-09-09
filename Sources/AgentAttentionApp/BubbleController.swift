@@ -12,6 +12,19 @@ final class BubbleView: NSView, CursorHosting {
     /// Built fresh on every secondary click, so it always reflects the current queue.
     var contextMenuProvider: (() -> NSMenu?)?
 
+    /// The graphite circle itself — everything the user thinks of as "the bubble".
+    ///
+    /// A child view rather than this view's own layer, because the window is deliberately larger
+    /// than the circle: `BubbleGeometry.haloInset` points of transparent margin on every side, so
+    /// the roam halo has somewhere to be drawn that the window will not clip. Painting the disc on
+    /// the root layer would make the disc grow with the window instead of leaving that margin.
+    private let disc = NSView()
+    /// The roam ring, stroked in the margin between the disc's edge and the window's.
+    ///
+    /// A layer, not a view: it has no hit-testing, no layout and no subviews of its own, and
+    /// `CAShapeLayer` strokes a circle without needing a `draw(_:)` override. Kept separate from
+    /// the disc's border on purpose — see `applyAppearance`.
+    private let halo = CAShapeLayer()
     private let glyph = NSImageView()
     private let badge = NSView()
     private let badgeLabel = NSTextField(labelWithString: "")
@@ -29,6 +42,7 @@ final class BubbleView: NSView, CursorHosting {
     private(set) var pendingCount = 0
     private(set) var unseenCount = 0
     private(set) var isExpanded = false
+    private(set) var isRoaming = false
     private let totalLabel = NSTextField(labelWithString: "")
 
     // Read back from the views themselves, for checks.
@@ -36,6 +50,10 @@ final class BubbleView: NSView, CursorHosting {
     var badgeText: String { badgeLabel.stringValue }
     var totalIsHidden: Bool { totalLabel.isHidden }
     var totalText: String { totalLabel.stringValue }
+    /// Whether the halo is actually painting, read back off the layer rather than off the flag
+    /// that was passed in: a check that asks the caller what it said proves nothing about what is
+    /// on screen.
+    var haloIsPainted: Bool { (halo.strokeColor?.alpha ?? 0) > 0 }
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -50,19 +68,37 @@ final class BubbleView: NSView, CursorHosting {
     }
 
     private func build() {
+        // This view is now only a frame around the disc: the whole of it that is not the disc is
+        // the halo margin, and none of it may paint. Stated rather than left to the defaults,
+        // because the disc's background, radius and border used to live here.
         layer?.masksToBounds = false
+        layer?.backgroundColor = nil
+        layer?.borderWidth = 0
+        layer?.cornerRadius = 0
+
+        // Beneath everything, including the disc. The two only meet at the disc's edge, so this
+        // decides nothing more than which of the two owns that single shared boundary pixel.
+        halo.fillColor = NSColor.clear.cgColor
+        layer?.insertSublayer(halo, at: 0)
+
+        disc.wantsLayer = true
+        disc.translatesAutoresizingMaskIntoConstraints = false
+        // The badge overhangs the circle at the corner of the disc's square bounds, exactly as it
+        // did when the disc was this view; clipping it to the disc would crop it.
+        disc.layer?.masksToBounds = false
+        addSubview(disc)
 
         glyph.translatesAutoresizingMaskIntoConstraints = false
         glyph.imageScaling = .scaleProportionallyUpOrDown
         glyph.contentTintColor = .white
-        addSubview(glyph)
+        disc.addSubview(glyph)
 
         badge.wantsLayer = true
         badge.translatesAutoresizingMaskIntoConstraints = false
         badge.layer?.backgroundColor = BubbleView.badgeColor.cgColor
         badge.layer?.borderWidth = 1.5
         badge.layer?.borderColor = NSColor.black.withAlphaComponent(0.35).cgColor
-        addSubview(badge)
+        disc.addSubview(badge)
 
         badgeLabel.font = .systemFont(ofSize: 11, weight: .bold)
         // Dark on amber, not white on amber. White over this orange measures 2.1 : 1, which is
@@ -77,21 +113,29 @@ final class BubbleView: NSView, CursorHosting {
         totalLabel.isEditable = false
         totalLabel.drawsBackground = false
         totalLabel.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(totalLabel)
+        disc.addSubview(totalLabel)
 
         badgeLabel.textColor = BubbleView.badgeTextColor
         badgeLabel.alignment = .center
         badgeLabel.translatesAutoresizingMaskIntoConstraints = false
         badge.addSubview(badgeLabel)
 
+        let inset = BubbleGeometry.haloInset
         NSLayoutConstraint.activate([
-            glyph.centerXAnchor.constraint(equalTo: centerXAnchor),
-            glyph.centerYAnchor.constraint(equalTo: centerYAnchor),
-            glyph.widthAnchor.constraint(equalTo: widthAnchor, multiplier: 0.44),
-            glyph.heightAnchor.constraint(equalTo: widthAnchor, multiplier: 0.44),
+            // The margin the halo is drawn in. Everything else on the bubble hangs off the disc,
+            // not off this view, so growing the window by `inset * 2` moves nothing the user sees.
+            disc.leadingAnchor.constraint(equalTo: leadingAnchor, constant: inset),
+            disc.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -inset),
+            disc.topAnchor.constraint(equalTo: topAnchor, constant: inset),
+            disc.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -inset),
 
-            badge.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -2),
-            badge.topAnchor.constraint(equalTo: topAnchor, constant: 2),
+            glyph.centerXAnchor.constraint(equalTo: disc.centerXAnchor),
+            glyph.centerYAnchor.constraint(equalTo: disc.centerYAnchor),
+            glyph.widthAnchor.constraint(equalTo: disc.widthAnchor, multiplier: 0.44),
+            glyph.heightAnchor.constraint(equalTo: disc.widthAnchor, multiplier: 0.44),
+
+            badge.trailingAnchor.constraint(equalTo: disc.trailingAnchor, constant: -2),
+            badge.topAnchor.constraint(equalTo: disc.topAnchor, constant: 2),
             badge.heightAnchor.constraint(equalToConstant: 20),
             badge.widthAnchor.constraint(greaterThanOrEqualToConstant: 20),
 
@@ -101,18 +145,20 @@ final class BubbleView: NSView, CursorHosting {
 
             // Opposite corner from the badge on purpose: the two numbers answer different questions
             // and must never be mistaken for each other at a glance.
-            totalLabel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 7),
-            totalLabel.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -6),
+            totalLabel.leadingAnchor.constraint(equalTo: disc.leadingAnchor, constant: 7),
+            totalLabel.bottomAnchor.constraint(equalTo: disc.bottomAnchor, constant: -6),
         ])
 
         setAccessibilityElement(true)
         setAccessibilityRole(.button)
-        update(pendingCount: 0, unseenCount: 0, expanded: false)
+        update(pendingCount: 0, unseenCount: 0, expanded: false, roaming: false)
     }
 
     override func layout() {
         super.layout()
-        layer?.cornerRadius = bounds.width / 2
+        // `super.layout()` is what applies the constraint-based frames, so the disc's bounds are
+        // only trustworthy after it has run.
+        disc.layer?.cornerRadius = disc.bounds.width / 2
         badge.layer?.cornerRadius = badge.bounds.height / 2
         applyAppearance()
     }
@@ -125,18 +171,52 @@ final class BubbleView: NSView, CursorHosting {
         // background. What is drawn on the bubble has to be legible because of the bubble.
         let base = NSColor(srgbRed: 0.16, green: 0.16, blue: 0.16, alpha: 1.0)
         let lifted = NSColor(srgbRed: 0.26, green: 0.26, blue: 0.26, alpha: 1.0)
-        layer?.backgroundColor = (hovering || isExpanded ? lifted : base).cgColor
-        layer?.borderWidth = 1
-        layer?.borderColor = (pendingCount > 0
+        disc.layer?.backgroundColor = (hovering || isExpanded ? lifted : base).cgColor
+        disc.layer?.borderWidth = 1
+        disc.layer?.borderColor = (pendingCount > 0
             ? NSColor.systemOrange.withAlphaComponent(0.7)
             : NSColor.white.withAlphaComponent(0.18)).cgColor
+
+        // Roam gets a channel of its own. The disc's border already means "sessions are waiting",
+        // and overloading one surface with two meanings makes both harder to read — so the halo
+        // lives in the margin *outside* the disc and the two compose: roaming with three sessions
+        // waiting reads as both at once rather than as one overwriting the other. Teal for the
+        // same reason: it has to be un-mistakable for the orange the border uses. Like that
+        // orange it is a system colour resolved right here, in this method, so whatever appearance
+        // is in effect is in effect for both of them.
+        //
+        // Implicit animation is switched off. This is a layer added by hand, not a view's backing
+        // layer, so Core Animation animates `path`, `lineWidth` and `strokeColor` by default — and
+        // `applyAppearance` runs on every layout, hover, and update, which would smear the ring
+        // across a window resize or a plain re-render.
+        let inset = BubbleGeometry.haloInset
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        halo.frame = bounds
+        // Stroked down the centre line of a circle inset by half the margin, so a `lineWidth` of
+        // `inset` covers exactly the margin: from the disc's edge out to the window's, and no
+        // further — anything further would be clipped by the window, which is the whole reason
+        // the window is `inset` points bigger than the disc in the first place.
+        halo.path = CGPath(ellipseIn: bounds.insetBy(dx: inset / 2, dy: inset / 2), transform: nil)
+        halo.lineWidth = inset
+        // Slightly under solid: the ring's outer edge is flush with the window's, where the
+        // window's own drop shadow begins, and it is decoration with nothing drawn on it — no text
+        // is measured against it, so no contrast floor applies.
+        halo.strokeColor = isRoaming
+            ? NSColor.systemTeal.withAlphaComponent(0.85).cgColor
+            : NSColor.clear.cgColor
+        CATransaction.commit()
+
         // **No layer shadow here, on purpose.** This view *is* the window's content view, and the
-        // window is exactly the size of the disc. A shadow drawn by this layer is therefore clipped
-        // to the window rectangle: it cannot spread outside the circle, so all that renders is the
-        // shadow filling the four corners around it — a grey square with a hole in the middle,
+        // window is only `BubbleGeometry.haloInset` points bigger than the disc on each side. A
+        // shadow drawn by any layer in here is therefore clipped to the window rectangle: it
+        // cannot spread out to the distance a drop shadow needs, so all that renders is the
+        // shadow filling the corners around the circle — a grey square with a hole in the middle,
         // which is precisely what it looked like. Giving it a circular `shadowPath` does not help,
         // because the clipping is the window, not the path. The shadow is cast by the *window*
-        // instead (`hasShadow`), which is not clipped and follows the content's own alpha.
+        // instead (`hasShadow`), which is not clipped and follows the content's own alpha — which
+        // is why this call matters here: turning the halo on or off changes that alpha's outline,
+        // and the window's cached shadow has to be told.
         window?.invalidateShadow()
     }
 
@@ -144,10 +224,14 @@ final class BubbleView: NSView, CursorHosting {
     ///   counts these; the quiet corner number counts everything still waiting. A queue that is all
     ///   old shows no badge at all, which is the point: the badge means *new*, and a badge that is
     ///   permanently lit is a badge nobody reads.
-    func update(pendingCount: Int, unseenCount: Int, expanded: Bool) {
+    /// - Parameter roaming: whether roam mode is currently holding the machine awake. Shown as the
+    ///   halo, in the margin outside the disc, and said in the label — never on the disc's border,
+    ///   which already carries the "sessions are waiting" signal.
+    func update(pendingCount: Int, unseenCount: Int, expanded: Bool, roaming: Bool) {
         self.pendingCount = pendingCount
         self.unseenCount = min(max(0, unseenCount), pendingCount)
         self.isExpanded = expanded
+        self.isRoaming = roaming
 
         // A shield, not a bell: this is a watch that is always on, not a notification that fired.
         let symbol = pendingCount > 0 ? "shield.lefthalf.filled" : "shield"
@@ -176,28 +260,43 @@ final class BubbleView: NSView, CursorHosting {
         } else {
             summary = "Agent Warden. \(waiting), \(self.unseenCount) new."
         }
-        setAccessibilityLabel(summary)
+        // Said, not only drawn. The halo is a colour in a 4pt margin: it is the one thing on this
+        // bubble that a person who cannot see it has no other way of learning.
+        let roamNote = roaming ? " Roam is on." : ""
+        setAccessibilityLabel(summary + roamNote)
         setAccessibilityValue("\(pendingCount)")
         setAccessibilityHelp(expanded
             ? "Press to hide the session list. Drag to move. Placement can also be set from the menu bar item."
             : "Press to show waiting sessions and session status. Drag to move. Placement can also be set from the menu bar item.")
-        toolTip = summary + (expanded ? " Click to collapse." : " Click to open.")
+        toolTip = summary + roamNote + (expanded ? " Click to collapse." : " Click to open.")
         applyAppearance()
     }
 
     // MARK: - Mouse
 
+    /// Tracked over the disc, not over the whole view: the halo margin is not part of the control,
+    /// so it must not show the pointing hand or lift the disc on hover. Derived from this view's
+    /// own bounds rather than read off `disc.frame` so it is right even before the first layout
+    /// pass — and, at `haloInset` points in on every side, it is the disc's rect by construction.
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
         trackingAreas.forEach(removeTrackingArea)
-        addTrackingArea(NSTrackingArea(rect: bounds, options: ClickCursor.trackingOptions, owner: self))
+        let discRect = bounds.insetBy(dx: BubbleGeometry.haloInset, dy: BubbleGeometry.haloInset)
+        addTrackingArea(NSTrackingArea(rect: discRect, options: ClickCursor.trackingOptions, owner: self))
     }
 
     /// The glyph and the badge are decoration drawn on top of one control. Without this they would
     /// hit-test as themselves — the badge label would offer a text cursor and eat the click that was
     /// meant to open the panel.
+    ///
+    /// The **halo margin** is decoration too, and must not hit-test at all: a click a few points
+    /// outside the disc has to fall through to whatever is behind, exactly as it did before the
+    /// window grew. The disc's square frame is the boundary, not its circle, because that square is
+    /// precisely what this view's bounds used to be — the corners were clickable then and stay so.
     override func hitTest(_ point: NSPoint) -> NSView? {
-        super.hitTest(point) == nil ? nil : self
+        let local = convert(point, from: superview)
+        guard disc.frame.contains(local) else { return nil }
+        return super.hitTest(point) == nil ? nil : self
     }
 
     override func cursorUpdate(with event: NSEvent) {
@@ -362,12 +461,26 @@ final class BubbleController {
 
     private let panel: NSPanel
     private let view: BubbleView
+    /// The **disc's** diameter, as configured. Never the window's — see `windowSide(forDisc:)`.
     private var size: CGFloat
     private var dragStartFrame: NSRect?
 
+    /// The window is the disc plus a halo margin on every side.
+    ///
+    /// The margin is unconditional, not added only while roaming: resizing the window on every
+    /// roam toggle would mean recomputing the placement and the bubble visibly jumping each time
+    /// the flag flipped. 8pt of permanently transparent window buys a toggle that never moves it.
+    private static func windowSide(forDisc size: CGFloat) -> CGFloat {
+        size + BubbleGeometry.haloInset * 2
+    }
+
+    /// - Parameter size: the diameter of the **disc**, which is what the user configures and what
+    ///   they see. The window is `BubbleGeometry.haloInset * 2` larger, so the halo has a margin
+    ///   to be drawn in without the disc shrinking to pay for it.
     init(size: CGFloat = 56) {
         self.size = size
-        let rect = NSRect(x: 0, y: 0, width: size, height: size)
+        let rect = NSRect(x: 0, y: 0, width: BubbleController.windowSide(forDisc: size),
+                          height: BubbleController.windowSide(forDisc: size))
         // `.utilityWindow` is deliberately absent. It is a *titled-panel* trait, and on a borderless
         // panel AppKit still draws the utility background behind the content — which showed up as a
         // soft grey square sitting behind the disc, exactly the thing a round, transparent bubble is
@@ -386,9 +499,10 @@ final class BubbleController {
         // Pinned, so a system switch to Light cannot resolve anything drawn here into dark-on-dark.
         panel.appearance = NSAppearance(named: .darkAqua)
         // The window casts the shadow, not the disc's layer. A layer shadow would be clipped to this
-        // window's bounds — and since the window is exactly the size of the disc, that clipped
-        // shadow showed up as a grey square around the circle. A window shadow is drawn outside the
-        // window and follows the alpha of what is in it, so a round bubble casts a round shadow.
+        // window's bounds — and the window clears the disc by only a few points of halo margin, far
+        // less than a drop shadow needs, so that clipped shadow showed up as a grey square around
+        // the circle. A window shadow is drawn outside the window and follows the alpha of what is
+        // in it, so a round bubble casts a round shadow.
         panel.hasShadow = true
         panel.isReleasedWhenClosed = false
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
@@ -414,7 +528,13 @@ final class BubbleController {
         view.onDragEnded = { [weak self] in
             guard let self else { return }
             self.dragStartFrame = nil
-            self.onPlacementChanged?(BubbleGeometry.placement(for: self.panel.frame, in: self.visibleFrame))
+            // `haloInset:` is what stops the bubble creeping. `panel.frame` is the window, which is
+            // wider than the disc by the margin; without trimming it back, every drag would remember
+            // an offset 4pt larger than the disc's real one and the bubble would walk away from its
+            // corner a little more each time it was moved.
+            self.onPlacementChanged?(BubbleGeometry.placement(for: self.panel.frame,
+                                                              in: self.visibleFrame,
+                                                              haloInset: BubbleGeometry.haloInset))
         }
     }
 
@@ -422,7 +542,16 @@ final class BubbleController {
         (NSScreen.main ?? NSScreen.screens.first)?.visibleFrame ?? CGRect(x: 0, y: 0, width: 1440, height: 900)
     }
 
+    /// The bubble's **window**, halo margin included. This is what the expanded panel anchors to,
+    /// which is why `AttentionPanelController.layoutAndPosition` passes `haloInset:` when it
+    /// resolves the panel's position from it.
     var frame: NSRect { panel.frame }
+
+    /// The **disc** as drawn: the window minus its halo margin. This is the circle the user placed
+    /// and the circle they measure by eye, so it is what a check about size or position should ask
+    /// for. `frame` is 8pt wider in each axis and mostly transparent.
+    var discFrame: NSRect { panel.frame.insetBy(dx: BubbleGeometry.haloInset,
+                                                dy: BubbleGeometry.haloInset) }
 
     /// For the readability check: the disc as drawn, and the appearance it is pinned to.
     var debugContentView: NSView? { panel.contentView }
@@ -436,18 +565,25 @@ final class BubbleController {
     var badgeText: String { view.badgeText }
     var totalText: String { view.totalIsHidden ? "" : view.totalText }
 
+    /// - Parameter size: the disc's diameter, as configured. The window resolved here is that plus
+    ///   the halo margin, and `haloInset:` is what tells `BubbleGeometry` that the remembered
+    ///   offset measures to the disc's edge rather than the window's — without it the bubble would
+    ///   land 4pt inside where the user left it.
     func apply(placement: BubblePlacement, size: CGFloat) {
         self.size = size
+        let side = BubbleController.windowSide(forDisc: size)
         let target = BubbleGeometry.frame(for: placement,
-                                          size: CGSize(width: size, height: size),
-                                          in: visibleFrame)
+                                          size: CGSize(width: side, height: side),
+                                          in: visibleFrame,
+                                          haloInset: BubbleGeometry.haloInset)
         panel.setFrame(target, display: true)
         view.frame = NSRect(origin: .zero, size: target.size)
         view.needsLayout = true
     }
 
-    func update(pendingCount: Int, unseenCount: Int, expanded: Bool) {
-        view.update(pendingCount: pendingCount, unseenCount: unseenCount, expanded: expanded)
+    func update(pendingCount: Int, unseenCount: Int, expanded: Bool, roaming: Bool) {
+        view.update(pendingCount: pendingCount, unseenCount: unseenCount,
+                    expanded: expanded, roaming: roaming)
     }
 
     func show() {
@@ -466,8 +602,12 @@ final class BubbleController {
     // Used by `--uicheck`.
 
     /// The centre of the bubble sits over the glyph; a click there must still be the bubble's.
+    ///
+    /// Laid out first: `hitTest` now consults the disc's frame, which the constraint solver has
+    /// not filled in until a layout pass has run.
     var debugHitTestCentreIsWholeBubble: Bool {
-        view.hitTest(NSPoint(x: view.bounds.midX, y: view.bounds.midY)) === view
+        view.layoutSubtreeIfNeeded()
+        return view.hitTest(NSPoint(x: view.bounds.midX, y: view.bounds.midY)) === view
     }
 
     /// The badge corner is the other place decoration could swallow a click.
@@ -476,6 +616,22 @@ final class BubbleController {
         let point = NSPoint(x: view.bounds.maxX - 10, y: view.bounds.maxY - 10)
         return view.hitTest(point) === view
     }
+
+    /// The halo margin is decoration, and a click in it must not be the bubble's — otherwise the
+    /// window's 4pt growth would silently make a ring of dead space clickable and draggable.
+    /// Sampled at the middle of each edge, which is where the margin is at its thinnest.
+    var debugHitTestInHaloMarginIsNothing: Bool {
+        view.layoutSubtreeIfNeeded()
+        let half = BubbleGeometry.haloInset / 2
+        let points = [NSPoint(x: view.bounds.midX, y: view.bounds.minY + half),
+                      NSPoint(x: view.bounds.midX, y: view.bounds.maxY - half),
+                      NSPoint(x: view.bounds.minX + half, y: view.bounds.midY),
+                      NSPoint(x: view.bounds.maxX - half, y: view.bounds.midY)]
+        return points.allSatisfy { view.hitTest($0) == nil }
+    }
+
+    /// Whether the roam ring is actually stroking anything, read back off the layer.
+    var debugHaloIsPainted: Bool { view.haloIsPainted }
 
     var debugTrackingCoversCursor: Bool {
         view.updateTrackingAreas()

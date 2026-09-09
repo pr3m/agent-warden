@@ -68,7 +68,8 @@ public enum BubbleGeometry {
     /// window's size or position.
     public static let haloInset: CGFloat = 4
 
-    /// Resolve a remembered placement into a frame, clamped so the bubble is entirely on screen.
+    /// Resolve a remembered placement into a frame, clamped so the whole returned rect — the disc
+    /// *and* its halo margin — is entirely on screen.
     ///
     /// - Parameters:
     ///   - size: The window's size — the disc plus its halo margin on every side.
@@ -99,7 +100,14 @@ public enum BubbleGeometry {
         case .topRight:
             origin = CGPoint(x: visibleFrame.maxX - offsetX - width, y: visibleFrame.maxY - offsetY - height)
         }
-        let discFrame = clamp(CGRect(origin: origin, size: CGSize(width: width, height: height)), in: visibleFrame)
+        // Clamped into the visible area *shrunk by the margin*, not into the visible area itself.
+        // The returned rect is the disc grown back out by `haloInset` on every side, so clamping
+        // the disc flush against the screen edge would push that grown rect `haloInset` points off
+        // it — and `BubbleController` drags with `clamp(window)`, which keeps the whole window on
+        // screen, so a dragged bubble and a restored one would not agree about where the edge is.
+        // At `haloInset: 0` this inset is the identity and the frame is exactly what it always was.
+        let bounds = visibleFrame.insetBy(dx: haloInset, dy: haloInset)
+        let discFrame = clamp(CGRect(origin: origin, size: CGSize(width: width, height: height)), in: bounds)
         return discFrame.insetBy(dx: -haloInset, dy: -haloInset)
     }
 

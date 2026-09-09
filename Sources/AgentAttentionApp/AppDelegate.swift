@@ -335,7 +335,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // panel themselves, in which case it is theirs to close.
         if items.isEmpty { presentation.queueEmptied() }
 
-        bubble.update(pendingCount: items.count, unseenCount: engine.unseenCount, expanded: isExpanded)
+        bubble.update(pendingCount: items.count, unseenCount: engine.unseenCount,
+                      expanded: isExpanded, roaming: roam.isActive)
         if config.bubbleEnabled { bubble.show() } else { bubble.hide() }
 
         panel.settings = config

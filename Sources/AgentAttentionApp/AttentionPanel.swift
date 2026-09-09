@@ -1096,7 +1096,11 @@ final class AttentionPanelController {
 
         let target: CGRect
         if let anchor {
-            target = BubbleGeometry.panelFrame(panelSize: size, bubbleFrame: anchor, in: visible)
+            // `anchor` is the bubble's *window*, which is wider than the disc by the halo margin.
+            // `haloInset:` trims it back to the disc, so the panel hugs the circle the user sees
+            // rather than leaving 4pt of transparent dead space between the two.
+            target = BubbleGeometry.panelFrame(panelSize: size, bubbleFrame: anchor, in: visible,
+                                               haloInset: BubbleGeometry.haloInset)
         } else {
             target = BubbleGeometry.clamp(
                 CGRect(x: visible.maxX - size.width - 16, y: visible.minY + 16,
