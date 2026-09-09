@@ -247,6 +247,49 @@ enum UICheck {
               noticeMenu.items.map(\.title).firstIndex(where: { $0.hasPrefix("Roam ended:") })
                   == noticeMenu.items.map(\.title).firstIndex(of: "Turn roam on").map { $0 + 1 })
 
+        // MARK: A refusal is actually visible
+
+        // A real `RoamService`, but never entered — `recordExternalNotice` touches no lease,
+        // no assertion and no socket, so this is as safe to construct as it is to leave
+        // untouched. This is the regression the previous round of review failed: a refusal
+        // reported only through `panel.flash` never reached `lastNotice`, so it vanished the
+        // instant the panel was closed, which is the common case. Proving the fix needs a real
+        // `RoamService`, because `AppDelegate.toggleRoam` cannot be exercised without one — this
+        // is the property the daemon-safety rule (`enter`/`exit`/`shutdown` are never called
+        // here) exists to let through, not to block.
+        let noticeRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("warden-uicheck-roam-\(UUID().uuidString)")
+        let refusalService = RoamService(paths: AppPaths(root: noticeRoot))
+        var flashed: [String] = []
+        refusalService.onNotice = { flashed.append($0) }
+        check("a fresh RoamService has nothing to say yet", refusalService.lastNotice == nil)
+
+        refusalService.recordExternalNotice(
+            "Roam refused: battery at 8%, at or below the 10% guard threshold. Charge first, "
+            + "or lower the threshold in config.json.",
+            logPrefix: "roam entry refused: "
+        )
+        check("recording a refusal reaches the panel's flash mechanism",
+              flashed == ["Roam refused: battery at 8%, at or below the 10% guard threshold. "
+                          + "Charge first, or lower the threshold in config.json."])
+        check("and the identical sentence is kept in lastNotice, not just flashed once",
+              refusalService.lastNotice?.text == flashed.first)
+
+        let refusalNoticeItem = BubbleMenu.roamNoticeItem(notice: refusalService.lastNotice)
+        check("so the menu row renders it even after any flash has long since cleared",
+              refusalNoticeItem?.title.hasPrefix("Roam refused: battery at 8%") == true)
+
+        // The second refusal path — the daemon's own `.refused(error)` — goes through the same
+        // door and must not silently reset what the first one recorded.
+        refusalService.recordExternalNotice("Roam could not start: foreign", logPrefix: "roam enter refused: ")
+        check("a second, different refusal replaces the first rather than being dropped",
+              refusalService.lastNotice?.text == "Roam could not start: foreign" && flashed.count == 2)
+
+        // Never entered, so nothing was ever asked of the daemon; nothing to reap.
+        check("this never touched the daemon: RoamService reports itself inactive throughout",
+              !refusalService.isActive && !refusalService.isChanging)
+        try? FileManager.default.removeItem(at: noticeRoot)
+
         // A plain click must be untouched by all of the above.
         bubble.debugPressSequence(button: 0)
         check("a plain click still toggles the panel", toggles == togglesBefore + 1)

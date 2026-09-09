@@ -265,22 +265,34 @@ struct AttentionCertaintyTests {
     }
 
     /// An existing config.json predates every roam key. It must still load, with roam off by
-    /// default in the only sense that matters: sane thresholds, and no invented SSID.
+    /// default in the only sense that matters: sane thresholds.
     @Test("Roam settings default safely and an older config still loads")
     func roamDefaults() throws {
         let config = AttentionConfig.default
         #expect(config.roamBatteryThreshold == 10)
-        #expect(config.roamHotspotSSID == nil)
         #expect(config.roamNudgeEnabled)
         #expect(config.roamNudgeSnoozeMinutes == 15)
 
         let old = Data(#"{"soundEnabled": true}"#.utf8)
         let decoded = try JSONCoding.decoder.decode(AttentionConfig.self, from: old)
         #expect(decoded.roamBatteryThreshold == 10)
-        #expect(decoded.roamHotspotSSID == nil)
         #expect(decoded.roamNudgeEnabled)
         #expect(decoded.roamNudgeSnoozeMinutes == 15)
         #expect(decoded.soundEnabled, "the one key the old file did carry is still honoured")
+    }
+
+    /// `roamHotspotSSID` existed briefly (hotspot-comparison warning) and was removed: naming
+    /// the current network needs Location authorisation, which is a permission decision for
+    /// this app's owner to make deliberately, not a side effect of a menu item. A `config.json`
+    /// saved by that build still has the key on disk. `Codable`'s guarantee — a keyed container
+    /// only ever looks up keys it is asked for, so a key nothing requests is silently skipped
+    /// rather than causing a decode failure — is exercised here against a literal payload
+    /// shaped like that old file, not merely assumed.
+    @Test("A config carrying the removed roamHotspotSSID key still loads")
+    func removedSSIDKeyIsIgnoredNotFatal() throws {
+        let fromBeforeRemoval = Data(#"{"roamBatteryThreshold": 12, "roamHotspotSSID": "CafeWifi"}"#.utf8)
+        let stillLoads = try JSONCoding.decoder.decode(AttentionConfig.self, from: fromBeforeRemoval)
+        #expect(stillLoads.roamBatteryThreshold == 12, "the keys this type still knows are unaffected")
     }
 
     /// A hand-edited battery threshold outside the guard's range falls back to the shipped
@@ -313,16 +325,12 @@ struct AttentionCertaintyTests {
     }
 
     /// The snooze is clamped to the nearest bound rather than defaulted, because neither end of
-    /// it inverts anything — it is the one roam setting that cannot put a machine to sleep. An
-    /// empty SSID is not a choice of network.
-    @Test("The roam nudge snooze is clamped, and a blank SSID is no SSID")
+    /// it inverts anything — it is the one roam setting that cannot put a machine to sleep.
+    @Test("The roam nudge snooze is clamped to its range")
     func roamNudgeSettingsAreClamped() throws {
-        let mangled = Data(#"""
-        {"roamNudgeSnoozeMinutes": 0, "roamHotspotSSID": "  "}
-        """#.utf8)
+        let mangled = Data(#"{"roamNudgeSnoozeMinutes": 0}"#.utf8)
         let loaded = try JSONCoding.decoder.decode(AttentionConfig.self, from: mangled).validated()
         #expect(loaded.roamNudgeSnoozeMinutes == AttentionConfig.roamNudgeSnoozeRange.lowerBound)
-        #expect(loaded.roamHotspotSSID == nil, "whitespace is not the name of a network")
 
         let absurd = Data(#"{"roamNudgeSnoozeMinutes": 99999}"#.utf8)
         let capped = try JSONCoding.decoder.decode(AttentionConfig.self, from: absurd).validated()

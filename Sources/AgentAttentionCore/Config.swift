@@ -79,13 +79,6 @@ public struct AttentionConfig: Codable, Sendable, Equatable {
     /// and deliberately **not** to the nearest bound: clamping 200 to 50 would sleep an
     /// unattended Mac at half charge, turning a typo into the most aggressive guard available.
     public var roamBatteryThreshold: Int
-    /// The network you expect to be on while roaming. Best-effort: a warning, never a block.
-    ///
-    /// `nil` until somebody names one — there is no sensible guess, and an invented SSID would
-    /// produce a warning about a network the user never chose. Best-effort because `RoamNetwork`
-    /// classifies on the gateway address rather than the name: SSID access is privacy-gated on
-    /// modern macOS, so an unreadable name makes the warning vaguer and never wrong.
-    public var roamHotspotSSID: String?
     /// The "you seem to be at the desk — still need roam?" prompt.
     ///
     /// On by default, which is safe because `NudgePolicy` requires three signals at once — lid
@@ -129,7 +122,6 @@ public struct AttentionConfig: Codable, Sendable, Equatable {
         bubblePlacement: .default,
         bubbleSize: 56,
         roamBatteryThreshold: 10,
-        roamHotspotSSID: nil,
         roamNudgeEnabled: true,
         roamNudgeSnoozeMinutes: 15
     )
@@ -158,7 +150,6 @@ public struct AttentionConfig: Codable, Sendable, Equatable {
         // Defaulted, like `chimeEnabled` and `orchestrationContractPath` before them, so every
         // existing call site still compiles without naming a roam setting it knows nothing about.
         roamBatteryThreshold: Int = 10,
-        roamHotspotSSID: String? = nil,
         roamNudgeEnabled: Bool = true,
         roamNudgeSnoozeMinutes: Int = 15
     ) {
@@ -183,7 +174,6 @@ public struct AttentionConfig: Codable, Sendable, Equatable {
         self.bubblePlacement = bubblePlacement
         self.bubbleSize = bubbleSize
         self.roamBatteryThreshold = roamBatteryThreshold
-        self.roamHotspotSSID = roamHotspotSSID
         self.roamNudgeEnabled = roamNudgeEnabled
         self.roamNudgeSnoozeMinutes = roamNudgeSnoozeMinutes
     }
@@ -233,12 +223,6 @@ public struct AttentionConfig: Codable, Sendable, Equatable {
                                                           AttentionConfig.roamNudgeSnoozeRange.lowerBound),
                                                 AttentionConfig.roamNudgeSnoozeRange.upperBound)
         if let voice = copy.speechVoiceIdentifier, voice.isEmpty { copy.speechVoiceIdentifier = nil }
-        // An empty SSID is not a choice of network, for the same reason an empty voice identifier
-        // is not a choice of voice: stored as absent, so "none named" has one representation.
-        if let ssid = copy.roamHotspotSSID,
-           ssid.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            copy.roamHotspotSSID = nil
-        }
         // An empty string is not a selection. Stored as absent, so "nothing chosen" has one
         // representation rather than two that behave differently.
         if let contract = copy.orchestrationContractPath,
@@ -279,11 +263,15 @@ public struct AttentionConfig: Codable, Sendable, Equatable {
         bubbleEnabled = flag(.bubbleEnabled, d.bubbleEnabled)
         bubblePlacement = ((try? c.decodeIfPresent(BubblePlacement.self, forKey: .bubblePlacement)) ?? nil) ?? d.bubblePlacement
         bubbleSize = num(.bubbleSize, d.bubbleSize)
-        // Every config.json written before roam existed is missing all four of these keys, and
-        // reads here as the defaults — the same rule every field above follows.
+        // Every config.json written before roam existed is missing these keys, and reads here
+        // as the defaults — the same rule every field above follows. A config written while
+        // `roamHotspotSSID` still existed carries a key this type no longer declares at all;
+        // `container(keyedBy:)` only ever looks up keys it is asked for, so an old value simply
+        // is not read — decoding an unrecognised key never throws, only decoding a *requested*
+        // key of the wrong shape does. See `SoundAndSettingsTests.removedSSIDKeyIsIgnoredNotFatal`
+        // for this exercised against a literal old-shaped payload, not assumed.
         roamBatteryThreshold =
             ((try? c.decodeIfPresent(Int.self, forKey: .roamBatteryThreshold)) ?? nil) ?? d.roamBatteryThreshold
-        roamHotspotSSID = (try? c.decodeIfPresent(String.self, forKey: .roamHotspotSSID)) ?? nil
         roamNudgeEnabled = flag(.roamNudgeEnabled, d.roamNudgeEnabled)
         roamNudgeSnoozeMinutes =
             ((try? c.decodeIfPresent(Int.self, forKey: .roamNudgeSnoozeMinutes)) ?? nil) ?? d.roamNudgeSnoozeMinutes

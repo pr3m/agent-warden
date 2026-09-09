@@ -431,6 +431,24 @@ final class RoamService {
         onNotice?(text)
     }
 
+    /// The same single door as `notify`, opened for something decided *outside* this class.
+    ///
+    /// Today's only callers are `AppDelegate.toggleRoam`'s two refusal paths: the battery
+    /// policy refusing to start roam at all, and the daemon refusing an `enter` request. Both
+    /// are new code that has nowhere else to put a sentence a user must actually see —
+    /// `AttentionPanelController.flash` sets a label without showing the panel, so a refusal
+    /// reported only that way is invisible whenever the panel is closed, which is the common
+    /// case. Routing it through here instead means it also lands in `lastNotice`, so it
+    /// survives on the menu row this same task added, and reaches `onNotice` exactly like
+    /// every other roam sentence — one door, so the three surfaces (`lastNotice`, the log,
+    /// `onNotice`) cannot drift the way they would if a caller set one directly and skipped
+    /// the others.
+    ///
+    /// - Parameter logPrefix: context for the log line only, exactly as in `notify`.
+    func recordExternalNotice(_ text: String, logPrefix: String = "") {
+        notify(text, logPrefix: logPrefix)
+    }
+
     /// Forget the session in memory and on disk, and say so. Deliberately touches neither the
     /// lease nor the assertion: each caller has its own order for those, and that order is the
     /// part that matters.

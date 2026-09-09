@@ -32,6 +32,33 @@ public enum RoamMenuState: Equatable, Sendable {
 /// The text and enablement for `RoamMenuState`, kept as pure functions so they can be unit
 /// tested without ever building an `NSMenuItem`. `BubbleMenu.roamItem` is the only caller.
 public enum RoamMenuText {
+    /// Which of the four states we are in, from the three facts that decide it.
+    ///
+    /// This is the one piece of roam-menu logic that used to live only in `AppDelegate`, where
+    /// nothing could exercise it directly: the Core suite cannot see it, and `--uicheck`
+    /// injects `RoamMenuState` values rather than deriving them. Lifted here so the mapping —
+    /// which of four things the user is told — is itself unit tested, not just the text and
+    /// enablement that follow from it.
+    ///
+    /// **Order matters, and `isActive` must be checked first.** If roam is already on, that is
+    /// the answer regardless of the other two facts — including a helper that has since become
+    /// unreachable, which must still read `.on` (and so still let the user click to end it)
+    /// rather than switch to `.unavailable` and disable the only path back to `.off`.
+    ///
+    /// - Parameters:
+    ///   - isActive: `RoamService.isActive`.
+    ///   - helperPresent: whatever the caller uses to answer "is there a power helper to ask at
+    ///     all" — `AppDelegate` answers this by checking whether the daemon's socket file
+    ///     exists, but this function only needs the answer, not how it was reached.
+    ///   - foreignHold: whether the most recent `enter` attempt reported that something else
+    ///     already holds the machine's sleep block. There is no proactive way to know this — see
+    ///     `AppDelegate.roamForeignHold`'s doc for why it can only be learned by trying.
+    public static func state(isActive: Bool, helperPresent: Bool, foreignHold: Bool) -> RoamMenuState {
+        if isActive { return .on }
+        guard helperPresent else { return .unavailable }
+        return foreignHold ? .foreign : .off
+    }
+
     /// What the item says. A disabled item still explains itself in its own title rather than
     /// only turning grey: "nothing happens when I click it" is the worst answer a menu can
     /// give, and `.unavailable` / `.foreign` each name a different thing to do about it.

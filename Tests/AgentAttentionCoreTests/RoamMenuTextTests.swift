@@ -5,6 +5,26 @@ import Testing
 @Suite("What the roam menu item says")
 struct RoamMenuTextTests {
 
+    @Test("Active beats everything else, whatever the other two facts say")
+    func activeAlwaysWins() {
+        #expect(RoamMenuText.state(isActive: true, helperPresent: true, foreignHold: false) == .on)
+        #expect(RoamMenuText.state(isActive: true, helperPresent: true, foreignHold: true) == .on)
+        #expect(RoamMenuText.state(isActive: true, helperPresent: false, foreignHold: false) == .on)
+        #expect(RoamMenuText.state(isActive: true, helperPresent: false, foreignHold: true) == .on)
+    }
+
+    @Test("No helper beats a foreign hold, when roam is not active")
+    func noHelperBeatsForeignHold() {
+        #expect(RoamMenuText.state(isActive: false, helperPresent: false, foreignHold: false) == .unavailable)
+        #expect(RoamMenuText.state(isActive: false, helperPresent: false, foreignHold: true) == .unavailable)
+    }
+
+    @Test("With the helper present and roam off, a foreign hold decides on vs. foreign")
+    func foreignHoldDecidesWhenHelperIsPresent() {
+        #expect(RoamMenuText.state(isActive: false, helperPresent: true, foreignHold: true) == .foreign)
+        #expect(RoamMenuText.state(isActive: false, helperPresent: true, foreignHold: false) == .off)
+    }
+
     @Test("Each state says what it is, and a disabled one says why")
     func titles() {
         #expect(RoamMenuText.title(for: .on) == "Turn roam off")

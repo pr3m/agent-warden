@@ -683,16 +683,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// bubble menu and the menu-bar menu — which both call `BubbleMenu.roamItem` with this
     /// same value — cannot disagree.
     ///
-    /// `.unavailable` is answered proactively, by checking whether the daemon's socket exists
-    /// at all — a `stat`, not a `connect`, so it costs nothing and touches nothing the daemon
-    /// owns. `.foreign` cannot be answered proactively (see `roamForeignHold`) and so only
-    /// appears after an attempt has actually reported it.
+    /// This only gathers the three facts and hands them to `RoamMenuText.state`, which is
+    /// where the actual mapping (and its priority order) lives, so that logic is unit tested
+    /// in Core rather than only exercised indirectly through this property. `helperPresent` is
+    /// answered proactively here, by checking whether the daemon's socket file exists — a
+    /// `stat`, not a `connect`, so it costs nothing and touches nothing the daemon owns.
+    /// `foreignHold` cannot be answered proactively (see `roamForeignHold`) and so only reflects
+    /// an attempt that has actually reported one.
     private var roamMenuState: RoamMenuState {
-        if roam.isActive { return .on }
-        guard FileManager.default.fileExists(atPath: PowerLeaseClient.socketPath) else {
-            return .unavailable
-        }
-        return roamForeignHold ? .foreign : .off
+        RoamMenuText.state(
+            isActive: roam.isActive,
+            helperPresent: FileManager.default.fileExists(atPath: PowerLeaseClient.socketPath),
+            foreignHold: roamForeignHold
+        )
     }
 
     /// The default IPv4 gateway, read from the System Configuration dynamic store — the same
@@ -729,18 +732,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let reading = PowerProbe.read()
         switch RoamPolicy.entryAction(reading: reading, threshold: config.roamBatteryThreshold) {
         case .refuse(let percent):
-            panel.flash("Roam refused: battery at \(percent)%, at or below the "
-                       + "\(config.roamBatteryThreshold)% guard threshold. Charge first, or "
-                       + "lower the threshold in config.json.", seconds: 12)
+            // Through `recordExternalNotice`, not a bare `flash`: a click that is refused and
+            // says nothing anywhere the user can find later is the "nothing happens when I
+            // click it" failure `RoamMenuText` warns against. This reaches the panel's status
+            // line *and* `lastNotice`, so it also survives on the menu's notice row if the
+            // panel happened to be closed at the moment of the click — which is the common case,
+            // since only the user opens it.
+            roam.recordExternalNotice(
+                "Roam refused: battery at \(percent)%, at or below the "
+                + "\(config.roamBatteryThreshold)% guard threshold. Charge first, or lower the "
+                + "threshold in config.json.",
+                logPrefix: "roam entry refused: "
+            )
+            render()
             return
         case .proceed:
             break
         }
 
-        // `ssid` stays nil: reading the *current* network's name (as opposed to the gateway
-        // address `classify` uses) needs location-gated APIs this app does not request
-        // entitlements for, and `RoamHotspot.ssid` is documented as best-effort for exactly
-        // this reason — an absent name makes the record vaguer, never wrong.
+        // Hotspot awareness is gateway-only, deliberately. The brief's original sketch also
+        // compared the *current* network's name against `config.roamHotspotSSID` to warn "you
+        // are on the wrong network" — reading a live SSID needs Location authorisation on
+        // modern macOS, and asking a menu-bar app's user to grant that for a warning the
+        // gateway check already substantially covers was judged not worth it. That is an
+        // owner decision, not an engineering one, which is why `roamHotspotSSID` was removed
+        // from `AttentionConfig` rather than merely left unused — see `Config.swift`. `kind`
+        // below is real; `ssid` stays nil because there is no reader for it, not because this
+        // call site forgot to pass one.
         let hotspot = RoamHotspot(kind: RoamNetwork.classify(gateway: currentGateway()).rawValue)
         roam.enter(hotspot: hotspot, onBattery: !reading.onAC) { [weak self] outcome in
             guard let self else { return }
@@ -752,11 +770,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             case .busyChanging:
                 // Rare: something else on this same `RoamService` was already mid-flight the
                 // instant this fired, which the disabled menu item is meant to prevent from a
-                // click. Nothing was asked of the daemon, so nothing needs undoing.
+                // click. Nothing was asked of the daemon, so nothing needs undoing, and this is
+                // not persisted to `lastNotice` — there is nothing wrong to remember, only a
+                // click that arrived a moment early.
                 self.panel.flash("Roam is already changing — try again in a moment.", seconds: 8)
             case .refused(let error):
                 self.roamForeignHold = (error == .foreign)
-                self.panel.flash("Roam could not start: \(error.rawValue)", seconds: 12)
+                // Same reasoning as the entry refusal above: this is new code in the same
+                // diff as the notice row, so it goes through the same one door.
+                self.roam.recordExternalNotice("Roam could not start: \(error.rawValue)",
+                                               logPrefix: "roam enter refused: ")
             }
             self.render()
         }
