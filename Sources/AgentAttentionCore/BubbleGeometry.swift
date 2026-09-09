@@ -51,10 +51,40 @@ public struct BubblePlacement: Codable, Sendable, Equatable {
 /// screen — which is most of what can go wrong here.
 public enum BubbleGeometry {
 
+    /// How far the window extends past the disc on every side, leaving room for the roam halo
+    /// ring to be drawn without being clipped.
+    ///
+    /// The bubble's window is exactly the size of its content, and content painted outside that
+    /// rectangle is clipped — `BubbleController.applyAppearance` already had to move the disc's
+    /// drop shadow from the view's layer to the window for exactly this reason, because a shadow
+    /// clipped to a circle's own bounds renders as a square with a hole in it. A halo ring drawn
+    /// outside the 56pt disc needs the same accommodation: a window `haloInset` points larger on
+    /// every side than the disc it contains.
+    ///
+    /// That margin is constant, not conditional on whether roam is currently on: resizing the
+    /// window only while roaming would mean a window resize and a placement recomputation on
+    /// every toggle, and the bubble visibly jumping. Keeping it constant costs 8pt of permanently
+    /// transparent window (4pt on each side) in exchange for a roam toggle that never touches the
+    /// window's size or position.
+    public static let haloInset: CGFloat = 4
+
     /// Resolve a remembered placement into a frame, clamped so the bubble is entirely on screen.
-    public static func frame(for placement: BubblePlacement, size: CGSize, in visibleFrame: CGRect) -> CGRect {
-        let width = min(size.width, visibleFrame.width)
-        let height = min(size.height, visibleFrame.height)
+    ///
+    /// - Parameters:
+    ///   - size: The window's size — the disc plus its halo margin on every side.
+    ///   - haloInset: How much of `size` on each edge is halo margin rather than disc. The stored
+    ///     `placement` offset always measures to the disc's edge, not the window's, so the disc
+    ///     is positioned first (at `size` shrunk by `haloInset` on every side) and the window rect
+    ///     is then grown back out around it — the disc, not the window, is what the user placed.
+    ///     Defaults to 0, not `BubbleGeometry.haloInset`: a caller that has not started passing the
+    ///     larger, halo-aware `size` must keep getting the window it always got, not one silently
+    ///     shifted by the margin. `haloInset: 0` and an unchanged `size` reproduce today's frame
+    ///     exactly; a caller ready for the halo passes both the bigger `size` and the margin.
+    public static func frame(for placement: BubblePlacement, size: CGSize, in visibleFrame: CGRect,
+                              haloInset: CGFloat = 0) -> CGRect {
+        let discSize = CGSize(width: size.width - haloInset * 2, height: size.height - haloInset * 2)
+        let width = min(discSize.width, visibleFrame.width)
+        let height = min(discSize.height, visibleFrame.height)
         let offsetX = max(0, placement.offsetX)
         let offsetY = max(0, placement.offsetY)
 
@@ -69,14 +99,27 @@ public enum BubbleGeometry {
         case .topRight:
             origin = CGPoint(x: visibleFrame.maxX - offsetX - width, y: visibleFrame.maxY - offsetY - height)
         }
-        return clamp(CGRect(origin: origin, size: CGSize(width: width, height: height)), in: visibleFrame)
+        let discFrame = clamp(CGRect(origin: origin, size: CGSize(width: width, height: height)), in: visibleFrame)
+        return discFrame.insetBy(dx: -haloInset, dy: -haloInset)
     }
 
     /// Turn a dragged position back into something worth remembering.
     ///
     /// The nearest corner wins, so a bubble dropped near the bottom-right stays bottom-right when
     /// the window is later resized or the display changes.
-    public static func placement(for frame: CGRect, in visibleFrame: CGRect) -> BubblePlacement {
+    ///
+    /// - Parameters:
+    ///   - frame: The dragged window's frame — the disc plus its halo margin.
+    ///   - haloInset: The same margin `frame(for:size:in:haloInset:)` was given. Reading the
+    ///     offset from the window rect instead of the disc rect would make the bubble creep
+    ///     `haloInset` points further from its corner on every drag, since each round trip through
+    ///     `frame(for:)` would re-add the margin this function failed to remove. Defaults to 0 for
+    ///     the same reason as `frame(for:size:in:haloInset:)`: a caller still passing window frames
+    ///     sized without a halo must get exactly today's placement back, not one nudged by a margin
+    ///     its frames never had.
+    public static func placement(for frame: CGRect, in visibleFrame: CGRect,
+                                  haloInset: CGFloat = 0) -> BubblePlacement {
+        let frame = frame.insetBy(dx: haloInset, dy: haloInset)
         let clamped = clamp(frame, in: visibleFrame)
         let distanceToLeft = clamped.minX - visibleFrame.minX
         let distanceToRight = visibleFrame.maxX - clamped.maxX
@@ -102,12 +145,22 @@ public enum BubbleGeometry {
     ///
     /// It opens on whichever side has more room, hugs the bubble's nearest horizontal edge so the
     /// two read as one control, and is then clamped into the screen.
+    ///
+    /// - Parameters:
+    ///   - bubbleFrame: The bubble's window frame — the disc plus its halo margin.
+    ///   - haloInset: The same margin `frame(for:size:in:haloInset:)` was given. The panel hugs
+    ///     the disc's edge, not the window's, so `bubbleFrame` is trimmed back to the disc before
+    ///     any of the arithmetic below runs. Defaults to 0 for the same reason as the other two
+    ///     functions: a caller passing a halo-less `bubbleFrame` must get exactly today's panel
+    ///     placement, not one pulled in by a margin that frame never had.
     public static func panelFrame(
         panelSize: CGSize,
         bubbleFrame: CGRect,
         in visibleFrame: CGRect,
-        gap: CGFloat = 10
+        gap: CGFloat = 10,
+        haloInset: CGFloat = 0
     ) -> CGRect {
+        let bubbleFrame = bubbleFrame.insetBy(dx: haloInset, dy: haloInset)
         let width = min(panelSize.width, visibleFrame.width)
         let height = min(panelSize.height, visibleFrame.height)
 

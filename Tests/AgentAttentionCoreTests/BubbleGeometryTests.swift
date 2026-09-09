@@ -203,4 +203,65 @@ struct BubbleGeometryTests {
         let config = try JSONCoding.decoder.decode(AttentionConfig.self, from: odd)
         #expect(config.bubblePlacement == .default)
     }
+
+    // MARK: - Halo inset
+
+    /// The window grows so the halo has somewhere to live. What must NOT move is the disc:
+    /// the user put the bubble where they wanted it, and an upgrade that shifts it 4pt is
+    /// an upgrade that moved their furniture.
+    @Test("Growing the window for the halo leaves the disc exactly where it was")
+    func discKeepsItsPlaceWhenTheWindowGrows() {
+        let screen = CGRect(x: 0, y: 0, width: 1_600, height: 1_000)
+        let placement = BubblePlacement(corner: .bottomRight, offsetX: 24, offsetY: 120)
+        let discSize = CGSize(width: 56, height: 56)
+        let inset = BubbleGeometry.haloInset
+
+        let before = BubbleGeometry.frame(for: placement, size: discSize, in: screen,
+                                          haloInset: 0)
+        let after = BubbleGeometry.frame(
+            for: placement,
+            size: CGSize(width: discSize.width + inset * 2, height: discSize.height + inset * 2),
+            in: screen, haloInset: inset)
+
+        // The window is bigger, and the disc inside it lands on the old window's rect.
+        #expect(after.insetBy(dx: inset, dy: inset) == before)
+    }
+
+    /// Dragging persists through `placement(for:)`. Without the same inset there, the
+    /// bubble creeps 4pt further from the corner every single time it is dragged.
+    @Test("A dragged bubble does not creep")
+    func draggingDoesNotCreep() {
+        let screen = CGRect(x: 0, y: 0, width: 1_600, height: 1_000)
+        let inset = BubbleGeometry.haloInset
+        let windowSize = CGSize(width: 64, height: 64)
+        let placement = BubblePlacement(corner: .bottomRight, offsetX: 24, offsetY: 120)
+
+        var frame = BubbleGeometry.frame(for: placement, size: windowSize, in: screen,
+                                         haloInset: inset)
+        for _ in 0..<5 {
+            let round = BubbleGeometry.placement(for: frame, in: screen, haloInset: inset)
+            frame = BubbleGeometry.frame(for: round, size: windowSize, in: screen,
+                                         haloInset: inset)
+        }
+        #expect(abs(BubbleGeometry.placement(for: frame, in: screen, haloInset: inset).offsetX
+                    - placement.offsetX) < 0.001)
+        #expect(abs(BubbleGeometry.placement(for: frame, in: screen, haloInset: inset).offsetY
+                    - placement.offsetY) < 0.001)
+    }
+
+    /// The panel sits next to the disc, not next to an invisible 4pt margin.
+    @Test("The panel anchors to the disc, not the halo window")
+    func panelAnchorsToTheDisc() {
+        let screen = CGRect(x: 0, y: 0, width: 1_600, height: 1_000)
+        let inset = BubbleGeometry.haloInset
+        let window = CGRect(x: 1_500, y: 100, width: 64, height: 64)
+        let panelSize = CGSize(width: 320, height: 400)
+
+        let withHalo = BubbleGeometry.panelFrame(panelSize: panelSize, bubbleFrame: window,
+                                                 in: screen, haloInset: inset)
+        let withoutHalo = BubbleGeometry.panelFrame(
+            panelSize: panelSize, bubbleFrame: window.insetBy(dx: inset, dy: inset),
+            in: screen, haloInset: 0)
+        #expect(withHalo == withoutHalo)
+    }
 }
