@@ -124,7 +124,9 @@ enum UICheck {
                 actions: .init(toggleSessions: #selector(QuitProbe.menuToggleExpansion),
                                revealDataFolder: #selector(QuitProbe.menuReveal),
                                quit: #selector(QuitProbe.menuQuit),
-                               placement: NSMenuItem(title: "Bubble position", action: nil, keyEquivalent: ""))
+                               toggleRoam: #selector(QuitProbe.menuToggleRoam),
+                               placement: NSMenuItem(title: "Bubble position", action: nil, keyEquivalent: "")),
+                roamState: .off, roamIsChanging: false, roamNotice: nil
             )
         }
 
@@ -159,7 +161,25 @@ enum UICheck {
             check("the menu says what it is watching", titles.contains { $0.contains("3 waiting") })
             check("the menu can show or hide the sessions", titles.contains("Show sessions"))
             check("the menu can reach the data folder", titles.contains("Reveal data folder"))
+            check("the menu offers roam, off and actionable", titles.contains("Turn roam on"))
+            check("roam sits directly above the placement item, as specified",
+                  titles.firstIndex(of: "Turn roam on").flatMap { roamIndex in
+                      titles.firstIndex(of: "Bubble position").map { roamIndex == $0 - 1 }
+                  } == true)
             check("the menu offers Quit, clearly labelled", titles.contains(BubbleMenu.quitTitle))
+
+            let roam = menu.items.first { $0.title == "Turn roam on" }
+            check("roam is enabled and has somewhere to go",
+                  roam?.isEnabled == true && roam?.target != nil && roam?.action != nil)
+            let roamsBefore = quitTarget.roams
+            if let roam, let action = roam.action, let target = roam.target as AnyObject? {
+                _ = target.perform(action)
+            }
+            check("choosing roam calls the selector it was built with, once",
+                  quitTarget.roams == roamsBefore + 1)
+            check("and it is the same item constructor the menu bar uses",
+                  BubbleMenu.roamItem(state: .off, isChanging: false, target: quitTarget,
+                                     action: #selector(QuitProbe.menuToggleRoam)).title == roam?.title)
 
             let quit = menu.items.first { $0.title == BubbleMenu.quitTitle }
             check("Quit is enabled and has somewhere to go",
@@ -176,6 +196,56 @@ enum UICheck {
                   BubbleMenu.quitItem(target: quitTarget, action: #selector(QuitProbe.menuQuit)).title
                       == quit?.title)
         }
+
+        // MARK: Roam menu item, every state
+
+        print("Roam menu item")
+        func roamTitled(_ state: RoamMenuState, isChanging: Bool = false) -> NSMenuItem {
+            BubbleMenu.roamItem(state: state, isChanging: isChanging, target: quitTarget,
+                               action: #selector(QuitProbe.menuToggleRoam))
+        }
+        check("on: actionable, titled to turn it off",
+              roamTitled(.on).isEnabled && roamTitled(.on).title == "Turn roam off")
+        check("off: actionable, titled to turn it on",
+              roamTitled(.off).isEnabled && roamTitled(.off).title == "Turn roam on")
+        check("unavailable: disabled, and says why in its own title rather than only greying out",
+              !roamTitled(.unavailable).isEnabled && roamTitled(.unavailable).title.contains("install.sh"))
+        check("a foreign hold: disabled, and says why in its own title",
+              !roamTitled(.foreign).isEnabled && roamTitled(.foreign).title.contains("another tool"))
+        check("a change in flight disables an otherwise-actionable item without altering its title",
+              !roamTitled(.on, isChanging: true).isEnabled
+                  && roamTitled(.on, isChanging: true).title == roamTitled(.on).title
+                  && !roamTitled(.off, isChanging: true).isEnabled
+                  && roamTitled(.off, isChanging: true).title == roamTitled(.off).title)
+        check("a change in flight cannot rescue an already-disabled item",
+              !roamTitled(.unavailable, isChanging: true).isEnabled
+                  && !roamTitled(.foreign, isChanging: true).isEnabled)
+        check("every roam item carries an accessibility label matching its title",
+              roamTitled(.off).accessibilityLabel() == roamTitled(.off).title)
+
+        check("no notice row when roam has nothing to say", BubbleMenu.roamNoticeItem(notice: nil) == nil)
+        let noticeAt = Date(timeIntervalSince1970: 1_000_000)
+        let noticeItem = BubbleMenu.roamNoticeItem(
+            notice: (text: "Battery at 8% — ended roam and slept your Mac.", at: noticeAt),
+            now: noticeAt.addingTimeInterval(150)
+        )
+        check("the notice row carries the sentence and its age, and cannot be clicked",
+              noticeItem?.title == "Battery at 8% — ended roam and slept your Mac. — 2m ago"
+                  && noticeItem?.isEnabled == false && noticeItem?.action == nil)
+
+        let noticeMenu = BubbleMenu.build(
+            pendingCount: 0, isExpanded: false, target: quitTarget,
+            actions: .init(toggleSessions: #selector(QuitProbe.menuToggleExpansion),
+                           revealDataFolder: #selector(QuitProbe.menuReveal),
+                           quit: #selector(QuitProbe.menuQuit),
+                           toggleRoam: #selector(QuitProbe.menuToggleRoam),
+                           placement: NSMenuItem(title: "Bubble position", action: nil, keyEquivalent: "")),
+            roamState: .off, roamIsChanging: false,
+            roamNotice: (text: "Roam ended: the power helper stopped holding the sleep block.", at: noticeAt)
+        )
+        check("a menu built with a notice shows it, directly below the roam item",
+              noticeMenu.items.map(\.title).firstIndex(where: { $0.hasPrefix("Roam ended:") })
+                  == noticeMenu.items.map(\.title).firstIndex(of: "Turn roam on").map { $0 + 1 })
 
         // A plain click must be untouched by all of the above.
         bubble.debugPressSequence(button: 0)
@@ -2764,10 +2834,14 @@ final class QuitProbe: NSObject {
     private(set) var quits = 0
     private(set) var toggles = 0
     private(set) var reveals = 0
+    private(set) var roams = 0
 
     @objc func menuQuit() { quits += 1 }
     @objc func menuToggleExpansion() { toggles += 1 }
     @objc func menuReveal() { reveals += 1 }
+    /// Never wired to a real `RoamService` here — a self-check must never dial the daemon's
+    /// socket. This only proves `BubbleMenu.roamItem` wired the selector it was given.
+    @objc func menuToggleRoam() { roams += 1 }
 }
 
 /// A player that records instead of sounding. Everything the UI check knows about the chime, it

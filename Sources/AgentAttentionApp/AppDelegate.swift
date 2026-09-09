@@ -1,5 +1,6 @@
 import AppKit
 import AgentAttentionCore
+import SystemConfiguration
 
 /// Wires the file-backed event stream to the attention queue, the floating bubble and the alerts.
 ///
@@ -31,6 +32,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Roam: the lid-closed session. Driven from the sweep below and from nothing else — see
     /// `RoamService` for why every call to the power daemon leaves this thread to make it.
     private let roam: RoamService
+    /// Whether the last `enter` attempt was refused because something other than this app
+    /// already holds the machine's sleep block.
+    ///
+    /// There is no proactive way to learn this: unlike "the power helper is missing", which
+    /// `roamMenuState` answers by checking whether the daemon's socket exists at all, a
+    /// foreign hold on `SleepDisabled` is only visible to whoever asks the daemon — and
+    /// asking is exactly what `enter` does. So this is learned by trying, remembered from the
+    /// most recent attempt, and superseded the moment a new attempt reports anything else:
+    /// see `toggleRoam`, the only writer.
+    private var roamForeignHold = false
     private lazy var pairingWindow = PairingWindow()
     /// The last completed registry scan, kept so the status interface can report its freshness.
     private var lastDiscovery: DiscoveryReport?
@@ -666,6 +677,91 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         pasteboard.setString(text, forType: .string)
     }
 
+    // MARK: - Roam
+
+    /// What the roam menu item should say right now, computed fresh for every render so the
+    /// bubble menu and the menu-bar menu — which both call `BubbleMenu.roamItem` with this
+    /// same value — cannot disagree.
+    ///
+    /// `.unavailable` is answered proactively, by checking whether the daemon's socket exists
+    /// at all — a `stat`, not a `connect`, so it costs nothing and touches nothing the daemon
+    /// owns. `.foreign` cannot be answered proactively (see `roamForeignHold`) and so only
+    /// appears after an attempt has actually reported it.
+    private var roamMenuState: RoamMenuState {
+        if roam.isActive { return .on }
+        guard FileManager.default.fileExists(atPath: PowerLeaseClient.socketPath) else {
+            return .unavailable
+        }
+        return roamForeignHold ? .foreign : .off
+    }
+
+    /// The default IPv4 gateway, read from the System Configuration dynamic store — the same
+    /// place `scutil` reads it from (`scutil <<< 'show State:/Network/Global/IPv4'` on this
+    /// machine returns a `Router` key holding exactly this address). This is an in-process
+    /// query of `configd`'s store, not a fork/exec of `route` or `netstat`, and it needs no
+    /// permission prompt. Feeds `RoamNetwork.classify(gateway:)`, which wants only the
+    /// address and never the interface name.
+    private func currentGateway() -> String? {
+        guard let store = SCDynamicStoreCreate(nil, "dev.agentwarden.roam" as CFString, nil, nil),
+              let global = SCDynamicStoreCopyValue(store, "State:/Network/Global/IPv4" as CFString)
+                as? [String: Any]
+        else { return nil }
+        return global["Router"] as? String
+    }
+
+    /// The single action behind the roam item in both menus.
+    ///
+    /// **Policy is consulted here, not inside `RoamService`.** `RoamPolicy.entryAction` is
+    /// what stops "roam granted at 8% battery, then slept ten seconds later by the guard's
+    /// first heartbeat" from reading as a malfunction — refusing before the daemon is ever
+    /// asked, with the reading that caused it, is the honest answer. `RoamService` holds no
+    /// battery policy of its own and this keeps it that way.
+    @objc private func toggleRoam() {
+        if roam.isActive {
+            roam.exit()
+            return
+        }
+        // The menu item is disabled while `isChanging` (see `RoamMenuText.isEnabled`), so this
+        // only guards a route that does not go through a click — `NSApp.sendAction`, called
+        // directly, as `UICheck` does.
+        guard !roam.isChanging else { return }
+
+        let reading = PowerProbe.read()
+        switch RoamPolicy.entryAction(reading: reading, threshold: config.roamBatteryThreshold) {
+        case .refuse(let percent):
+            panel.flash("Roam refused: battery at \(percent)%, at or below the "
+                       + "\(config.roamBatteryThreshold)% guard threshold. Charge first, or "
+                       + "lower the threshold in config.json.", seconds: 12)
+            return
+        case .proceed:
+            break
+        }
+
+        // `ssid` stays nil: reading the *current* network's name (as opposed to the gateway
+        // address `classify` uses) needs location-gated APIs this app does not request
+        // entitlements for, and `RoamHotspot.ssid` is documented as best-effort for exactly
+        // this reason — an absent name makes the record vaguer, never wrong.
+        let hotspot = RoamHotspot(kind: RoamNetwork.classify(gateway: currentGateway()).rawValue)
+        roam.enter(hotspot: hotspot, onBattery: !reading.onAC) { [weak self] outcome in
+            guard let self else { return }
+            switch outcome {
+            case .entered:
+                self.roamForeignHold = false
+            case .alreadyOn:
+                break
+            case .busyChanging:
+                // Rare: something else on this same `RoamService` was already mid-flight the
+                // instant this fired, which the disabled menu item is meant to prevent from a
+                // click. Nothing was asked of the daemon, so nothing needs undoing.
+                self.panel.flash("Roam is already changing — try again in a moment.", seconds: 8)
+            case .refused(let error):
+                self.roamForeignHold = (error == .foreign)
+                self.panel.flash("Roam could not start: \(error.rawValue)", seconds: 12)
+            }
+            self.render()
+        }
+    }
+
     // MARK: - Menu bar (secondary surface)
 
     private func installStatusItem() {
@@ -749,6 +845,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         showBubble.state = config.bubbleEnabled ? .on : .off
         menu.addItem(showBubble)
 
+        // Same constructor, same inputs, as the bubble's own menu builds in `buildBubbleMenu`
+        // — see `BubbleMenu.roamItem`'s doc for why that must hold.
+        menu.addItem(BubbleMenu.roamItem(state: roamMenuState, isChanging: roam.isChanging,
+                                        target: self, action: #selector(toggleRoam)))
+        if let noticeItem = BubbleMenu.roamNoticeItem(notice: roam.lastNotice) {
+            menu.addItem(noticeItem)
+        }
+
         // Keyboard- and menu-driven placement, so moving the bubble never requires a drag.
         menu.addItem(placementMenuItem())
 
@@ -819,7 +923,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     /// The bubble's own right-click / control-click menu. Built by `BubbleMenu`, which owns the
-    /// single Quit constructor the menu bar item uses too.
+    /// single Quit and roam constructors the menu bar item uses too.
     func buildBubbleMenu() -> NSMenu {
         BubbleMenu.build(
             pendingCount: engine.pendingCount,
@@ -829,8 +933,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 toggleSessions: #selector(menuToggleExpansion),
                 revealDataFolder: #selector(menuReveal),
                 quit: #selector(menuQuit),
+                toggleRoam: #selector(toggleRoam),
                 placement: placementMenuItem()
-            )
+            ),
+            roamState: roamMenuState,
+            roamIsChanging: roam.isChanging,
+            roamNotice: roam.lastNotice
         )
     }
 
