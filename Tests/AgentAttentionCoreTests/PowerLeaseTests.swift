@@ -113,6 +113,28 @@ struct PowerLeaseTests {
         #expect(free.status(now: t0, observed: .off).reply == .free(setting: .off))
     }
 
+    /// I9. The daemon's SIGTERM handler needs a way to give the block back on behalf of a holder
+    /// it is not, and neither `release` nor `disconnected` will do it: both are addressed to one
+    /// connection and both correctly refuse to act for anybody else.
+    @Test("A daemon that is stopping gives the block back whoever holds it")
+    func relinquishClearsAnyHolder() {
+        var lease = PowerLease()
+        _ = lease.acquire(connection: 7, observed: .off, now: t0)
+        #expect(lease.holder == 7)
+        #expect(lease.relinquish() == .clearBlock)
+        #expect(lease.holder == nil)
+        // And it says nothing needs undoing when nothing is held, so a stopping daemon that
+        // never granted a lease does not run `pmset` to clear a block it never set.
+        #expect(lease.relinquish() == .none)
+    }
+
+    @Test("Relinquishing a lease nobody holds is a no-op, not a clear")
+    func relinquishOnAFreeLeaseDoesNothing() {
+        var lease = PowerLease()
+        #expect(lease.relinquish() == .none)
+        #expect(lease.holder == nil)
+    }
+
     @Test("The heartbeat interval leaves room for missed beats")
     func intervalsAreSane() {
         #expect(PowerLease.renewInterval == 10)

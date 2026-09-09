@@ -45,6 +45,31 @@ daemon.reconcile()
 daemon.startExpiryTimer()
 daemon.log("started, serving uid \(allowedUID)")
 
+// Clear the block before exiting when we are told to stop.
+//
+// `launchctl bootout` — an uninstall, an upgrade, an administrator — delivers SIGTERM and does not
+// start us again, so without this the next chance to repair a stranded `SleepDisabled` is
+// `reconcile()` at the *next boot*: a long way off for a Mac that can no longer sleep. The design
+// lists it as one of the things this daemon needs, precisely because `KeepAlive` is "a likely
+// recovery path, not a guarantee".
+//
+// **Two things about the shape.** SIGTERM is ignored at the disposition level first: a
+// `DispatchSourceSignal` observes a signal, it does not suppress the default action, so without
+// this line the process would be killed before any handler ran. And the work happens in the
+// source's handler on an ordinary queue, not in a C signal handler, so it is under none of the
+// async-signal-safety restrictions — `queue.sync`, `pmset` and file removal are all things a real
+// signal handler may not do. The source is held in a top-level `let` because a released
+// `DispatchSourceSignal` stops delivering.
+signal(SIGTERM, SIG_IGN)
+let terminationQueue = DispatchQueue(label: "dev.agentwarden.powerd.termination")
+let termination = DispatchSource.makeSignalSource(signal: SIGTERM, queue: terminationQueue)
+termination.setEventHandler {
+    daemon.log("SIGTERM — releasing the sleep block before exiting")
+    daemon.shutdown()
+    exit(0)
+}
+termination.resume()
+
 // The listening socket comes from launchd (`Sockets` → `PowerdSocket` in the plist), which
 // created it with the owner and mode the plist declares before this process was even
 // started. We never bind, never unlink, and so can never race a stale inode or delete

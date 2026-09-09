@@ -104,6 +104,27 @@ public struct PowerLease: Sendable {
         return .clearBlock
     }
 
+    /// The daemon itself is stopping. Give the lease up, whoever holds it.
+    ///
+    /// Distinct from `release` and `disconnected` because neither of those fits: both are a
+    /// *holder* giving something back and both are addressed to one connection, so both refuse
+    /// to act on behalf of anybody else — correctly, since a peer must never be able to end
+    /// another peer's session. This is the daemon speaking about itself, and it has no
+    /// connection to name. Distinct from `expireIfDue` too: nothing here is overdue, and a
+    /// shutdown that waited for the deadline would leave the block standing.
+    ///
+    /// Called from the `SIGTERM` handler, which is the case that made it necessary: `launchctl
+    /// bootout` and an upgrade both stop this process politely, and a daemon that exits without
+    /// clearing `SleepDisabled` leaves a machine that cannot sleep with nothing left running that
+    /// knows why. Startup reconciliation would repair it — at the *next* boot, which is a long
+    /// way away for a Mac that will not sleep.
+    public mutating func relinquish() -> Effect {
+        guard holder != nil else { return .none }
+        holder = nil
+        deadline = nil
+        return .clearBlock
+    }
+
     /// Called from the daemon's own timer, which must be independent of the connection
     /// read loop — a timer driven by that loop would stop exactly when the loop hangs.
     public mutating func expireIfDue(now: Date) -> Effect {

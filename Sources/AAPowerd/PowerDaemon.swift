@@ -201,6 +201,33 @@ final class PowerDaemon: @unchecked Sendable {
         queue.sync { apply(lease.disconnected(connection: connection)) }
     }
 
+    /// This daemon is being stopped. Give the block back before going.
+    ///
+    /// **Why a daemon needs this at all**, when `reconcile()` already repairs a stranded block:
+    /// reconcile runs at *startup*. `launchctl bootout system/dev.agentwarden.powerd` — which is
+    /// what an uninstall, an upgrade and an administrator all do — stops this process and does
+    /// not start it again, so the next reconcile is at the next boot. Between the two, the Mac
+    /// cannot sleep and nothing running knows why. The design lists this among the things the
+    /// daemon needs because `KeepAlive` is "a likely recovery path, not a guarantee".
+    ///
+    /// Everything here is the ordinary release path, not a special one: the same `clearBlock`
+    /// effect, applied through the same `apply`, which clears the marker before the setting for
+    /// the same reason it always does. The expiry timer is cancelled first so it cannot fire
+    /// against a lease that is being given up.
+    ///
+    /// **Bounded, and that is what makes it usable from a signal handler's queue.** `queue.sync`
+    /// waits for whatever the state queue is doing, and since every `pmset` call is now capped at
+    /// `PmsetControl.deadline` that wait has a ceiling well inside `launchd`'s grace period
+    /// before it escalates to `SIGKILL`. Before that cap this could have blocked forever, and a
+    /// shutdown handler that never returns is worse than none.
+    func shutdown() {
+        queue.sync {
+            expiryTimer?.cancel()
+            expiryTimer = nil
+            apply(lease.relinquish())
+        }
+    }
+
     /// Hand out the next connection identity. Serialized like everything else, because the
     /// counter is what the lease uses to recognise its holder and two peers must never
     /// receive the same one.
