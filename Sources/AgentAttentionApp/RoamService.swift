@@ -286,12 +286,11 @@ final class RoamService {
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
                 self.phase = .idle
-                // `false` means unconfirmed, never "there was nothing to release" — an expired
-                // lease answers `error nolease` and lands here too. It is logged rather than put
-                // in front of the user because the connection is torn down either way, and the
-                // daemon clears the block for a holder that disconnects. The battery guard, which
-                // cannot wait to find that out, treats the same answer very differently.
-                if !confirmed {
+                // Anything but `.confirmed` is logged rather than put in front of the user,
+                // because the connection is torn down either way and the daemon clears the block
+                // for a holder that disconnects. The battery guard, which cannot wait to find
+                // that out, treats the same answers very differently.
+                if confirmed != .confirmed {
                     self.log("roam off: the daemon did not confirm the release; the block should "
                              + "clear as the connection closes. Check with: pmset -g | grep SleepDisabled")
                 }
@@ -328,9 +327,9 @@ final class RoamService {
     /// else.** An earlier revision drove them from `AppDelegate`'s sweep, which was wrong twice
     /// over. `sweepIntervalSeconds` is a user-editable setting clamped to `1...3600`: at an hour,
     /// the battery guard would be absent for an hour at a time on a lid-closed Mac — the precise
-    /// failure roam exists to prevent — and at anything above 45 seconds a live session would
-    /// read as dead, because `RoamState.isLive` measures `leaseRenewedAt` against a 45-second
-    /// window — the same number as `PowerLease.expiry`, and its default argument. The sweep is
+    /// failure roam exists to prevent — and at anything above `PowerLease.expiry` a live session
+    /// would read as dead, because `RoamState.isLive` measures `leaseRenewedAt` against
+    /// `RoamState.defaultLeaseWindow`, which is that same constant. The sweep is
     /// also the weaker clock in kind, not just in cadence: it
     /// is a `Timer` on the main run loop with a two-second tolerance, while the renew timer is a
     /// `.strict` dispatch source that overrides the system's minimum leeway. Roam runs with no
@@ -379,13 +378,16 @@ final class RoamService {
                 self.phase = .idle
                 self.assertion.release()
                 self.endActivity()
-                // `false` is *unconfirmed*, not "nothing to release": an expired lease answers
-                // `error nolease` and arrives here. Neither answer is a claim about the
-                // machine-wide setting, which only the daemon can read — so on `false` we must
-                // not act as though the block were clear. Sleeping a Mac that will refuse to
-                // stay asleep is worse than not sleeping it, and worse still if we then say we
-                // did.
-                guard released else {
+                // **Only `.confirmed` is licence to sleep.** `.unconfirmed` covers an expired
+                // lease, which answers `error nolease`, and a daemon that went quiet;
+                // `.notHeld` means this client was not holding a lease at the moment it asked —
+                // a real race, since roam was live enough for the heartbeat to have delivered us
+                // here, so the lease can only have been dropped in between. None of the three
+                // is a claim about the machine-wide setting, which only the daemon can read, and
+                // two of them are silence rather than an answer. Sleeping a Mac that will refuse
+                // to stay asleep is worse than not sleeping it, and worse still if we then say
+                // we did.
+                guard released == .confirmed else {
                     self.notify("Roam ended, but the sleep block could not be confirmed as "
                                 + "cleared, so your Mac was left awake. Clear it with: "
                                 + "sudo pmset -a disablesleep 0",
@@ -536,11 +538,16 @@ final class RoamService {
 
 /// What the machine's power situation is, right now.
 ///
-/// **IOKit rather than `pmset -g batt`.** This is read from `AppDelegate`'s sweep, on the main
-/// thread, every `sweepIntervalSeconds` for as long as the app runs. `IOPSCopyPowerSourcesInfo`
-/// is an in-process registry read; shelling out to `pmset` would be a fork, an exec and a parse
-/// of human-readable output on the UI thread nearly six thousand times a day. It is also the
-/// same framework `SleepAssertion` and `SystemSleep` already use, so it is not a new dependency.
+/// **IOKit rather than `pmset -g batt`.** Two callers, both on the main thread: `leaseRenewed`,
+/// every `PowerLease.renewInterval` (10s) for as long as a roam session lasts, and `toggleRoam`,
+/// once per click. `IOPSCopyPowerSourcesInfo` is an in-process registry read; shelling out to
+/// `pmset` would be a fork, an exec and a parse of human-readable output on the UI thread every
+/// ten seconds — 360 times an hour, on a lid-closed machine whose battery is the thing being
+/// conserved. It is also the same framework `SleepAssertion` and `SystemSleep` already use, so it
+/// is not a new dependency.
+///
+/// (It used to run from `AppDelegate`'s sweep, for the whole life of the app rather than only
+/// while roaming. `leaseRenewed`'s own comment says why that moved; this one said it had not.)
 ///
 /// **Every failure reports as "on AC, percent unknown", and that direction is deliberate.**
 /// `RoamPolicy.guardAction` answers `.none` to both, so a reading we could not take can never

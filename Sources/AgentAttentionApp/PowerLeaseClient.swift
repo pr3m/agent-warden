@@ -39,10 +39,12 @@ import AgentAttentionCore
 /// `PowerError.assertionFailed` exists in Core for the same reason in the other direction.
 ///
 /// **Threading.** One serial queue guards everything: the descriptor, the holding flag, the
-/// timer, and every byte on the wire. `acquire()` and `release()` are synchronous and hop
-/// onto it; the renew timer targets it, so its handler is already on it and must never
-/// `sync` back. `onLost` is the one thing outside that rule — it is set and called on the
-/// main thread, so no lock guards it and none is needed.
+/// renew timer, the EOF watch, and every byte on the wire. `acquire()` and `release()` are
+/// synchronous and hop onto it; the renew timer and the EOF read source both target it, so their
+/// handlers are already on it and must never `sync` back — and, because it is serial, the two of
+/// them can never interleave, which is what makes `reportLoss()` fire once rather than twice.
+/// `onLost` is the one thing outside that rule — it is set and called on the main thread, so no
+/// lock guards it and none is needed.
 final class PowerLeaseClient {
     /// Where the daemon listens. The same literal appears in the LaunchDaemon plist, which
     /// is what creates the socket; launchd sets its owner and mode before this app can
@@ -111,6 +113,10 @@ final class PowerLeaseClient {
     /// The heartbeat, alive exactly as long as the lease is. Guarded by `queue`.
     private var renewTimer: DispatchSourceTimer?
 
+    /// Watches the connection itself, so a daemon that goes away is noticed the moment it does.
+    /// Alive exactly as long as the lease is. Guarded by `queue`. See `startWatchingForEOF`.
+    private var eofSource: DispatchSourceRead?
+
     /// Whether the lease is ours right now. Guarded by `queue`; read through `holding`.
     private var isHolding = false
 
@@ -149,41 +155,55 @@ final class PowerLeaseClient {
         return queue.sync { acquireOnQueue() }
     }
 
-    /// Give the lease back, and say whether the daemon confirmed it.
+    /// What giving the lease back actually established. Three cases, and the third is why this
+    /// is not a `Bool`.
     ///
-    /// The answer matters where the machine is about to be put to sleep deliberately: an
-    /// unconfirmed release means `SleepDisabled` may still be set, and a machine told to
-    /// sleep while that setting stands will simply refuse. Where roam is only being switched
-    /// off the answer changes nothing, so this is `@discardableResult` — the value is there
-    /// for the caller that needs it, not a demand on the one that does not.
+    /// The old signature answered `true` both when the daemon confirmed the release *and* when
+    /// there was no lease to give back. Those look alike and are not: only the first is any kind
+    /// of statement about `SleepDisabled`, and the caller that matters — the battery guard, about
+    /// to put the machine to sleep — read them as one and treated "we were not holding anything"
+    /// as licence to sleep. Narrow race, and exactly the lie this file forbids.
+    enum ReleaseOutcome: Equatable {
+        /// The daemon answered `ok`. As close to "the block is clear" as anything here gets.
+        case confirmed
+        /// We asked and did not get an `ok` — a refusal, a dead connection, or silence past the
+        /// deadline. An already-expired lease lands here too: the daemon answers `error nolease`
+        /// for one it no longer tracks.
+        case unconfirmed
+        /// There was no lease of ours to give back, so nothing was asked and **nothing is
+        /// claimed**. Not a success and not a failure: an absence of information.
+        case notHeld
+    }
+
+    /// Give the lease back, and say what that established.
     ///
-    /// `true` means one of exactly two things: the daemon **confirmed** the release, or this
-    /// client was not holding a lease to begin with. Anything else is `false` — including,
-    /// and this is the case worth stating, a lease that has already expired: the daemon
-    /// answers `release` on a lease it no longer tracks with `error nolease`, which is not
-    /// `.ok` and so reports `false` here.
+    /// The answer matters where the machine is about to be put to sleep deliberately: without a
+    /// confirmation `SleepDisabled` may still be set, and a machine told to sleep while that
+    /// setting stands will simply refuse. Where roam is only being switched off the answer
+    /// changes nothing, so this is `@discardableResult` — the value is there for the caller that
+    /// needs it, not a demand on the one that does not.
     ///
-    /// So `false` does not mean "the block is definitely still set" and `true` does not mean
-    /// "the block is definitely clear". Neither is a claim about the machine-wide setting,
-    /// which only the daemon can read. A caller deciding whether to sleep the machine should
-    /// read `false` as *unconfirmed* and refuse to sleep on it — the conservative direction,
-    /// because sleeping a machine that will not stay asleep is worse than not sleeping it.
+    /// **No case here is a claim about the machine-wide setting**, which only the daemon can
+    /// read. `.confirmed` is the daemon's word that it did the clear; the other two are silence
+    /// of different kinds. A caller deciding whether to sleep the machine must require
+    /// `.confirmed` and refuse on anything else — the conservative direction, because sleeping a
+    /// machine that will not stay asleep is worse than not sleeping it.
     ///
     /// **Precondition: not the main thread**, for the same reason as `acquire()`. One
     /// exchange, so at worst about six seconds against a daemon that has stopped answering.
     /// The connection is torn down either way — an unanswered release still ends the lease,
     /// because the daemon drops one whose holder disconnects.
     @discardableResult
-    func release() -> Bool {
+    func release() -> ReleaseOutcome {
         return queue.sync {
-            guard isHolding else { return true }
+            guard isHolding else { return .notHeld }
             let confirmed = exchange(.release) == .ok
             // Cleared before the connection goes, and on the same serial queue the renewal
             // runs on, so a heartbeat cannot slip in behind this and report a loss for a
             // lease that was given up on purpose.
             isHolding = false
             teardown()
-            return confirmed
+            return confirmed ? .confirmed : .unconfirmed
         }
     }
 
@@ -221,6 +241,7 @@ final class PowerLeaseClient {
         case .ok:
             isHolding = true
             startRenewing()
+            startWatchingForEOF()
             return .success(())
         case .error(let error):
             // `busy`, `foreign` and `unverified` all arrive here and are all passed through
@@ -301,14 +322,25 @@ final class PowerLeaseClient {
                         source, capacity)
             }
         }
-        // `connect` is the one call in this file that `SO_SNDTIMEO` does not bound, and
-        // leaving it blocking would put a hole straight through this type's thesis. For an
-        // AF_UNIX stream socket a full listen backlog makes `connect` wait for a slot — and
-        // the daemon's accept loop takes its state queue to hand out a connection id
-        // (`claimConnectionID`), so a daemon wedged on that queue stops accepting, the
-        // backlog fills, and a blocking `connect` here would hold `queue` for ever and stop
-        // the renew timer that runs on it. That is the wedged-daemon case this file exists
-        // to survive, arriving through the front door.
+        // `connect` is the one call in this file that `SO_SNDTIMEO` does not bound, and leaving
+        // it blocking would put a hole straight through this type's thesis. Defence in depth
+        // rather than a fix for a demonstrated hang, and worth being exact about which:
+        //
+        // The case in mind is the daemon's accept loop taking its state queue to hand out a
+        // connection id (`claimConnectionID`), so a daemon wedged on that queue stops accepting
+        // and the listen backlog fills. What a full AF_UNIX backlog then does to `connect` was
+        // MEASURED on this machine's Darwin, and it does not block: it returns ECONNREFUSED,
+        // which the code below already treats as an immediate failure. An earlier revision of
+        // this comment asserted the opposite as platform fact; it was wrong.
+        //
+        // The bounding stays, because the reason for it does not depend on that measurement.
+        // `connect(2)` promises no timeout of its own, `SO_SNDTIMEO` does not cover it, the
+        // behaviour of a full backlog is not contractual on any of these paths, and the cost of
+        // being wrong is not a slow connect — it is `queue` held for ever, and with it the renew
+        // timer that runs on it, which is the exact wedged-daemon failure this file exists to
+        // survive. A bound whose justification is "we cannot get a guarantee" is worth keeping;
+        // one whose justification is a claim that turned out to be false is not, so this says
+        // which it is.
         //
         // So: connect non-blocking, wait on `poll` against the same deadline every other
         // exchange uses, then put the socket back into blocking mode — every read and write
@@ -397,10 +429,100 @@ final class PowerLeaseClient {
     private func teardown() {
         renewTimer?.cancel()
         renewTimer = nil
-        if fd >= 0 {
-            close(fd)
-            fd = -1
+        guard let source = eofSource else {
+            if fd >= 0 {
+                close(fd)
+                fd = -1
+            }
+            return
         }
+        eofSource = nil
+        // **The descriptor has to outlive the source.** `dispatch/source.h` is explicit that a
+        // monitored descriptor must not be closed until the source's cancellation handler has
+        // run: close it here and the source may still be handed a descriptor number that this
+        // process has since reused for something else entirely. So `fd` is cleared now — nothing
+        // may use it from this instant — and the close happens in the cancel handler, which runs
+        // on `queue` like everything else in this type. The handler captures only the number, not
+        // `self`, so it is safe from `deinit` as well.
+        let doomed = fd
+        fd = -1
+        source.setEventHandler(handler: nil)
+        source.setCancelHandler { close(doomed) }
+        source.cancel()
+    }
+
+    /// Notice the daemon going away *now*, rather than at the next heartbeat.
+    ///
+    /// **Why the heartbeat is not enough.** `renew` fires every `PowerLease.renewInterval` (10s),
+    /// so a daemon that died a moment after one renewal is not discovered for almost the whole
+    /// interval. For those seconds the halo stays lit, the status line keeps printing
+    /// `🎒 roam on`, and the machine's sleep block is already gone — the app claiming exactly the
+    /// protection it no longer has, which is the one lie this feature must not tell. The design
+    /// calls for it in as many words: "EOF on the lease socket, or a `renew` that fails, must
+    /// immediately: mark roam off/failed in the UI, release the assertion, and invalidate
+    /// `roam.json`."
+    ///
+    /// **Why it cannot double-fire with the heartbeat.** The source targets `queue`, the same
+    /// serial queue the renew timer targets and every exchange runs on, so this handler can never
+    /// interleave with either — only run before or after. Whichever of the two discovers the loss
+    /// first goes through `reportLoss()`, which clears `isHolding` before anything else and tears
+    /// down; the other then finds `isHolding` false and returns without a word.
+    ///
+    /// **Why it cannot fire after a deliberate `release()`.** `release()` clears `isHolding` and
+    /// calls `teardown()`, which cancels this source — and cancelling a dispatch source from the
+    /// queue it targets is documented to prevent any further invocation of its handler. The
+    /// `isHolding` guard below is the second line of defence, not the first.
+    ///
+    /// **Why the peek.** A read source fires on *anything* readable, and "readable" at EOF is
+    /// indistinguishable from "readable" with a byte waiting until you look. `recv(MSG_PEEK)`
+    /// looks without consuming, so a stray byte is left exactly where the next `exchange` will
+    /// read it. Zero is the peer's close; a hard error is a socket that is no longer usable;
+    /// both are the lease being gone. Unsolicited data is neither — this protocol's daemon never
+    /// speaks first — so it is left alone, and if it really is out-of-step framing the next
+    /// `renew` fails on it and reports the loss through the ordinary path.
+    ///
+    /// Caller must already be on `queue`.
+    private func startWatchingForEOF() {
+        guard fd >= 0 else { return }
+        let source = DispatchSource.makeReadSource(fileDescriptor: fd, queue: queue)
+        source.setEventHandler { [weak self] in
+            guard let self else { return }
+            // Already on `queue` — the source targets it — so nothing here needs synchronising
+            // and nothing here may `sync` back onto it.
+            guard self.isHolding, self.fd >= 0 else { return }
+            var probe: UInt8 = 0
+            let peeked = recv(self.fd, &probe, 1, Int32(MSG_PEEK))
+            if peeked > 0 { return }
+            if peeked < 0 {
+                // A signal, or the receive slice expiring on a wakeup with nothing behind it,
+                // is not the daemon going away. (EWOULDBLOCK is EAGAIN on Darwin.)
+                let code = errno
+                if code == EINTR || code == EAGAIN { return }
+            }
+            self.reportLoss()
+        }
+        source.resume()
+        eofSource = source
+    }
+
+    /// The lease is gone and it was not our doing: stop holding, stop the heartbeat, close, tell
+    /// the app — in that order.
+    ///
+    /// One function because two paths discover it — a refused renewal and the socket ending — and
+    /// two copies of this sequence would be two chances to get the order wrong or to report twice.
+    /// Clearing `isHolding` first is what makes it idempotent: whichever path arrives second finds
+    /// nothing to do. Nothing may observe a client that claims the lease over a connection that
+    /// has gone.
+    ///
+    /// Caller must already be on `queue`.
+    private func reportLoss() {
+        guard isHolding else { return }
+        isHolding = false
+        teardown()
+        // `async`, never `sync`. A caller sitting in `acquire()` or `release()` is blocked on this
+        // very queue, and a synchronous hop to the main thread would deadlock against it. Hopping
+        // at all is what lets `onLost` be main-thread-only and therefore lock-free.
+        DispatchQueue.main.async { [weak self] in self?.onLost?() }
     }
 
     /// Start the heartbeat that keeps the lease alive.
@@ -450,16 +572,9 @@ final class PowerLeaseClient {
             // synchronising and nothing here may `sync` back onto it.
             guard self.isHolding else { return }
             guard self.exchange(.renew) == .ok else {
-                // The order matters: stop holding, then stop the heartbeat and close, then
-                // tell the app. Cleared first so nothing can observe a client that claims
-                // the lease over a connection that has gone.
-                self.isHolding = false
-                self.teardown()
-                // `async`, never `sync`. A caller sitting in `acquire()` or `release()` is
-                // blocked on this very queue, and a synchronous hop to the main thread
-                // would deadlock against it. Hopping at all is what lets `onLost` be
-                // main-thread-only and therefore lock-free.
-                DispatchQueue.main.async { [weak self] in self?.onLost?() }
+                // Shared with the EOF watch, so the two paths that can discover a lost lease
+                // cannot report it twice or in a different order. See `reportLoss`.
+                self.reportLoss()
                 return
             }
             // The daemon confirmed it. Hopped the same way and for the same reason as the loss
@@ -566,6 +681,20 @@ final class PowerLeaseClient {
     deinit {
         renewTimer?.cancel()
         renewTimer = nil
-        if fd >= 0 { close(fd) }
+        // Same descriptor-outlives-the-source rule as `teardown()`, and it applies here too:
+        // the EOF source holds its handler weakly, so this object can be deallocated with the
+        // source still live. Closing `fd` here without cancelling would leave a dispatch source
+        // watching a descriptor number this process may reuse a moment later.
+        if let source = eofSource {
+            eofSource = nil
+            let doomed = fd
+            fd = -1
+            source.setEventHandler(handler: nil)
+            source.setCancelHandler { close(doomed) }
+            source.cancel()
+        } else if fd >= 0 {
+            close(fd)
+            fd = -1
+        }
     }
 }

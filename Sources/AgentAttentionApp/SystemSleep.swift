@@ -22,7 +22,8 @@ import IOKit.pwr_mgt
 ///
 /// **The block is released first, and that ordering is not decoration.** The caller gives
 /// the power lease back, confirms the daemon acknowledged it, and only then calls here —
-/// which is the whole reason `PowerLeaseClient.release()` returns a `Bool` at all. Asking
+/// which is the whole reason `PowerLeaseClient.release()` returns a `ReleaseOutcome` at all,
+/// and why only its `.confirmed` case is licence to reach this function. Asking
 /// for sleep while the machine-wide block may still stand risks the worst outcome this
 /// feature has: a user told their Mac was sleeping to save their work, over a machine that
 /// stayed awake on a dying battery.
