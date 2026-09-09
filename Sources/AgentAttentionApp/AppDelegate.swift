@@ -29,8 +29,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Keeps the name and the ⌘N number on each row matching what the tab bar actually says. See
     /// `TabTitleService` for why a title has to be re-read rather than remembered.
     private let tabTitles: TabTitleService
-    /// Roam: the lid-closed session. Driven from the sweep below and from nothing else — see
-    /// `RoamService` for why every call to the power daemon leaves this thread to make it.
+    /// Roam: the lid-closed session.
+    ///
+    /// **Not driven from the sweep.** It is started and stopped by `toggleRoam`, and once running
+    /// it keeps its own time off the lease heartbeat — `RoamService.leaseRenewed`, every
+    /// `PowerLease.renewInterval`, which is what stamps `roam.json` and runs the battery guard.
+    /// The sweep was the original clock and was wrong twice over: `sweepIntervalSeconds` is
+    /// user-editable up to an hour, and a `Timer` on the main run loop is deferrable in exactly
+    /// the no-windows, display-off state roam runs in. `RoamService.leaseRenewed` carries the
+    /// full reasoning. What the sweep still does is *render* — `roamMenuState` is recomputed on
+    /// every draw — which is a different thing from driving.
+    ///
+    /// See `RoamService` for why every call to the power daemon leaves this thread to make it.
     private let roam: RoamService
     /// Whether the last `enter` attempt was refused because something other than this app
     /// already holds the machine's sleep block.
@@ -41,6 +51,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// asking is exactly what `enter` does. So this is learned by trying, remembered from the
     /// most recent attempt, and superseded the moment a new attempt reports anything else:
     /// see `toggleRoam`, the only writer.
+    ///
+    /// **Being the only writer is why `.foreign` has to stay clickable** (`RoamMenuText
+    /// .isActionable`). Nothing re-checks this flag — the sweep cannot, because the only verbs
+    /// that would answer are `acquire`, which would silently *take* the lease if it succeeded,
+    /// and `status`, which would mean a second client opening a fresh blocking socket round
+    /// trip every sweep for a state this rare. So with the item disabled, one `error foreign`
+    /// made roam unavailable until the app was restarted, however long ago the user cleared the
+    /// hold. A click is the cheap, honest re-check, and it lands here.
     private var roamForeignHold = false
     private lazy var pairingWindow = PairingWindow()
     /// The last completed registry scan, kept so the status interface can report its freshness.

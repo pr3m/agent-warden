@@ -49,11 +49,24 @@ public struct RoamState: Codable, Sendable, Equatable {
         self.nudgeSnoozedUntil = nudgeSnoozedUntil
     }
 
+    /// How long after the last confirmed renewal this file still describes a live session.
+    ///
+    /// **`PowerLease.expiry`, referenced and not retyped.** These two numbers are the same fact
+    /// seen from two sides: the daemon drops the machine's sleep block `PowerLease.expiry`
+    /// seconds after the holder's last renewal, so a `roam.json` older than that describes a
+    /// session whose block is already gone. It sat here as a bare `45` in the same module as the
+    /// constant it was copying — which is not a comment that can go stale, it is a *number* that
+    /// can, silently, the next time somebody tunes the lease and reasonably assumes one edit was
+    /// enough. Then `aa-roam status` and the status line would keep printing `🎒 roam on` for
+    /// however long the two had drifted apart. `RoamStateTests` asserts the tie in both
+    /// directions rather than trusting this comment to be read.
+    public static let defaultLeaseWindow: TimeInterval = PowerLease.expiry
+
     /// Is this state still true right now?
     ///
     /// - Parameter probe: returns the start time of the given PID, or nil if no such
     ///   process. Injected so the rule can be exercised without a real process.
-    public func isLive(now: Date = Date(), leaseWindow: TimeInterval = 45,
+    public func isLive(now: Date = Date(), leaseWindow: TimeInterval = RoamState.defaultLeaseWindow,
                        probe: (Int32) -> Double?) -> Bool {
         guard active else { return false }
         guard let started = probe(ownerPID) else { return false }

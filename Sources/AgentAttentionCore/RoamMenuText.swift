@@ -23,9 +23,18 @@ public enum RoamMenuState: Equatable, Sendable {
     /// toggle that quietly failed would be worse than one that says why it is disabled.
     case unavailable
     /// Something other than Agent Warden already holds the machine's sleep block — for
-    /// example, `sudo pmset -a disablesleep 1` run by hand. The daemon refuses to take over a
-    /// setting it did not set itself, so roam cannot start until that external hold is
-    /// cleared, and the item says so rather than failing silently on click.
+    /// example, `sudo pmset -a disablesleep 1` run by hand, or a roam plugin that has not been
+    /// uninstalled yet. The daemon refuses to take over a setting it did not set itself, so
+    /// roam cannot start until that external hold is cleared, and the item says so rather than
+    /// failing silently on click.
+    ///
+    /// **Unlike `.unavailable`, this one is still clickable**, and that is deliberate. This
+    /// state is *remembered from the last attempt* — there is no proactive way to learn it (see
+    /// `AppDelegate.roamForeignHold`), so nothing in the app can notice the external hold going
+    /// away. Left un-actionable, the flag had exactly one writer, `toggleRoam`, which a disabled
+    /// item can never reach: one `error foreign` and roam was gone until the app was restarted,
+    /// even after the user had cleared the hold. Asking again is both the only way to find out
+    /// and free when it fails, so the item invites it.
     case foreign
 }
 
@@ -67,14 +76,24 @@ public enum RoamMenuText {
         case .on: return "Turn roam off"
         case .off: return "Turn roam on"
         case .unavailable: return "Roam needs the power helper — run install.sh"
-        case .foreign: return "Roam unavailable — another tool holds sleep"
+        case .foreign: return "Retry roam — another tool holds sleep"
         }
     }
 
-    /// Whether the state itself is one a click can act on. `.on` and `.off` are; the other two
-    /// each describe a precondition nothing in this app can fix by clicking again.
+    /// Whether the state itself is one a click can act on.
+    ///
+    /// `.on` and `.off` obviously are. `.foreign` is too: it is a memory of the last attempt
+    /// rather than a fact anything re-checks, so a click is the only way to find out whether the
+    /// external hold has been cleared — and the only thing that can clear
+    /// `AppDelegate.roamForeignHold`, whose sole writer is the handler behind this item. A
+    /// retry that fails costs one refused socket round trip and says why.
+    ///
+    /// `.unavailable` is the one that is not: there is no daemon socket to talk to, so a click
+    /// has nothing to ask, and the title says what to do instead (run install.sh). That state
+    /// *is* re-checked on every render — it is a `stat` of the socket path — so it corrects
+    /// itself the moment the helper is installed, without needing a click to notice.
     public static func isActionable(_ state: RoamMenuState) -> Bool {
-        state == .on || state == .off
+        state == .on || state == .off || state == .foreign
     }
 
     /// Whether the item should respond to a click right now. Composes `isActionable` with

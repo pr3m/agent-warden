@@ -210,16 +210,22 @@ enum UICheck {
               roamTitled(.off).isEnabled && roamTitled(.off).title == "Turn roam on")
         check("unavailable: disabled, and says why in its own title rather than only greying out",
               !roamTitled(.unavailable).isEnabled && roamTitled(.unavailable).title.contains("install.sh"))
-        check("a foreign hold: disabled, and says why in its own title",
-              !roamTitled(.foreign).isEnabled && roamTitled(.foreign).title.contains("another tool"))
+        // Clickable on purpose: nothing in the app re-checks a foreign hold, so a retry is the
+        // only way to learn it has been cleared — and the click handler is the only writer of
+        // the flag that puts the item in this state.
+        check("a foreign hold: still clickable, and says both why and that a retry is the way out",
+              roamTitled(.foreign).isEnabled && roamTitled(.foreign).title.contains("another tool")
+                  && roamTitled(.foreign).title.lowercased().contains("retry"))
         check("a change in flight disables an otherwise-actionable item without altering its title",
               !roamTitled(.on, isChanging: true).isEnabled
                   && roamTitled(.on, isChanging: true).title == roamTitled(.on).title
                   && !roamTitled(.off, isChanging: true).isEnabled
                   && roamTitled(.off, isChanging: true).title == roamTitled(.off).title)
-        check("a change in flight cannot rescue an already-disabled item",
-              !roamTitled(.unavailable, isChanging: true).isEnabled
-                  && !roamTitled(.foreign, isChanging: true).isEnabled)
+        check("a change in flight cannot rescue an item with no daemon to ask",
+              !roamTitled(.unavailable, isChanging: true).isEnabled)
+        check("a change in flight withholds even the foreign-hold retry, and puts it back after",
+              !roamTitled(.foreign, isChanging: true).isEnabled
+                  && roamTitled(.foreign, isChanging: false).isEnabled)
         check("every roam item carries an accessibility label matching its title",
               roamTitled(.off).accessibilityLabel() == roamTitled(.off).title)
 

@@ -50,6 +50,25 @@ struct RoamStateTests {
         #expect(!off.isLive(now: t0, leaseWindow: 45, probe: { _ in 500 }))
     }
 
+    /// I4. The window used to be a bare `45` sitting in the same module as `PowerLease.expiry`,
+    /// which is the number it was copying. Tuning the lease and leaving this behind would not
+    /// break a test or produce a warning — it would just make `aa-roam status` and the status
+    /// line keep printing `🎒 roam on` for however long the two had drifted, which is the exact
+    /// class of lie roam is not allowed to tell. Asserted in both directions: the constant is the
+    /// same value, and the *behaviour* pivots on it rather than on a number written here.
+    @Test("The default lease window is the daemon's expiry, and the behaviour follows it")
+    func leaseWindowIsTiedToTheLeaseExpiry() {
+        #expect(RoamState.defaultLeaseWindow == PowerLease.expiry)
+
+        let session = state(renewed: t0)
+        // One second inside the daemon's expiry: the block is still held, so this is still live.
+        #expect(session.isLive(now: t0.addingTimeInterval(PowerLease.expiry - 1),
+                               probe: { _ in 500 }))
+        // One second past it: the daemon has dropped the block, so the file must not claim roam.
+        #expect(!session.isLive(now: t0.addingTimeInterval(PowerLease.expiry + 1),
+                                probe: { _ in 500 }))
+    }
+
     @Test("State round-trips through JSON")
     func roundTrips() throws {
         let encoded = try JSONCoding.encoder.encode(state())

@@ -33,12 +33,24 @@ struct RoamMenuTextTests {
         #expect(RoamMenuText.title(for: .foreign).contains("another tool"))
     }
 
-    @Test("Only the two real states are actionable")
+    @Test("Everything but a missing helper is actionable")
     func enablement() {
         #expect(RoamMenuText.isActionable(.on))
         #expect(RoamMenuText.isActionable(.off))
         #expect(!RoamMenuText.isActionable(.unavailable))
-        #expect(!RoamMenuText.isActionable(.foreign))
+        // `.foreign` is remembered from the last attempt and re-checked by nothing, so a click
+        // is the only way to find out the external hold is gone -- and the click handler is the
+        // only writer of the flag that produces this state. Disabling it made roam unavailable
+        // until the app was restarted, however long ago the hold was cleared.
+        #expect(RoamMenuText.isActionable(.foreign))
+    }
+
+    @Test("A foreign hold offers a retry rather than a dead end")
+    func foreignInvitesARetry() {
+        #expect(RoamMenuText.isEnabled(state: .foreign, isChanging: false))
+        #expect(RoamMenuText.title(for: .foreign).lowercased().contains("retry"))
+        // Still not while a change is in flight -- that rule is about timing, not about state.
+        #expect(!RoamMenuText.isEnabled(state: .foreign, isChanging: true))
     }
 
     @Test("A change in flight disables an otherwise-actionable state")
@@ -55,8 +67,6 @@ struct RoamMenuTextTests {
     func isChangingCannotRescueUnactionableStates() {
         #expect(!RoamMenuText.isEnabled(state: .unavailable, isChanging: false))
         #expect(!RoamMenuText.isEnabled(state: .unavailable, isChanging: true))
-        #expect(!RoamMenuText.isEnabled(state: .foreign, isChanging: false))
-        #expect(!RoamMenuText.isEnabled(state: .foreign, isChanging: true))
     }
 
     @Test("The notice line carries the sentence and how long ago it was said")
