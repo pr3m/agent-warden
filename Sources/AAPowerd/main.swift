@@ -68,6 +68,12 @@ guard activation == 0, let socketFDs, socketCount > 0 else {
 let listener = socketFDs[0]
 free(socketFDs)
 
+// How many connections may be in flight at once, mirroring `BridgeSocketServer`'s `workers`
+// semaphore. The app holds one for the whole roam session and `aa-roam status` opens a brief
+// one, so eight is generous for every legitimate use.
+let maximumConnections = 8
+let workers = DispatchSemaphore(value: maximumConnections)
+
 // Accept loop. One thread per connection: connections are few — the app, plus the occasional
 // `aa-roam status` — and each is long-lived, so a thread each is simpler than multiplexing
 // and, crucially, cannot starve the expiry timer, which runs on the state queue instead.
@@ -93,13 +99,38 @@ while true {
         continue
     }
 
+    // Bounded, and deliberately *without* waiting for a slot.
+    //
+    // The failure this prevents is not "the daemon runs out of threads". A same-uid process
+    // that reconnects instead of reusing — a bug loop, not an attacker — would accumulate
+    // detached threads until this process ran out of descriptors. `accept` would then return
+    // `EMFILE`, which is neither `EINTR` nor `ECONNABORTED`, so the guard above would exit;
+    // launchd would restart us; and `reconcile()` would clear the block. The lid-closed sleep
+    // block would drop in the middle of a roam — the one outcome this whole feature exists to
+    // prevent, reached with no privilege at all.
+    //
+    // `BridgeSocketServer` blocks on its semaphore because its connections are short
+    // request/response exchanges under an I/O deadline, so a queued caller is served
+    // shortly. These are long-lived: one is held for as long as somebody is roaming. Waiting
+    // for a slot would therefore stall the accept loop for hours and turn a reconnect loop
+    // into a denial of service against the legitimate client — the very thing being defended
+    // against. Refusing immediately gives the excess peer an EOF it can retry, and leaves the
+    // daemon answering renewals and holding the block.
+    guard workers.wait(timeout: .now()) == .success else {
+        daemon.log("refused a connection: \(maximumConnections) already in flight")
+        close(client)
+        continue
+    }
+
     let connectionID = daemon.claimConnectionID()
     Thread.detachNewThread {
         // Whatever ends this thread — EOF, a write failure, a client that never sends a
-        // newline — the lease must not outlive it.
+        // newline — the lease must not outlive it. The slot is returned last, so a
+        // replacement connection is never admitted before this one's descriptor is closed.
         defer {
             daemon.connectionClosed(connectionID)
             close(client)
+            workers.signal()
         }
         var buffer = [UInt8](repeating: 0, count: 256)
         var pending = Data()
@@ -121,10 +152,12 @@ while true {
                 guard written == out.count else { return }
             }
 
-            // Bounded after draining, not before: the residue here is by definition an
-            // unfinished line, and every verb in this protocol is under a dozen bytes. A
-            // peer that has sent 4 KB without a newline is not speaking it, and a root
-            // daemon must not grow a buffer on its say-so.
+            // The buffer is bounded. Each read adds at most 256 bytes and every complete
+            // line is drained just above, so what is left here can only ever be an
+            // unfinished one — this trips on nothing else, whichever side of the drain it
+            // sits. Every verb in this protocol is under a dozen bytes, so a peer that has
+            // sent 4 KB without a newline is not speaking it, and a root daemon must not
+            // grow a buffer on its say-so.
             guard pending.count < 4096 else { return }
         }
     }
