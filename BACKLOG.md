@@ -2,6 +2,23 @@
 
 What this prototype deliberately does not do, and why.
 
+## Done, and no longer a dependency
+
+**Roam is native.** Keeping the Mac awake with the lid closed used to mean the external
+`claude-code-roam` Claude Code plugin, and that dependency is gone: roam is built into Agent Warden
+— a root `aa-powerd` helper owning `SleepDisabled` as an exclusive heartbeat-renewed lease, an
+idle-only power assertion, a battery guard that sleeps the machine deliberately before the charge
+runs out, and a `🎒 roam on` status-line segment served by `aa-roam`. `install.sh` migrates an
+existing plugin status-line wrapper onto Warden's own, carrying every other segment through
+verbatim, and asks first. The plugin can be uninstalled; nothing here needs it. See the
+[Roam](README.md#roam) section of the README, including the
+`sudo pmset -a disablesleep 0` repair.
+
+Roam's own deliberate non-goals — a lease that authenticates a user rather than an application,
+assertions macOS may override under thermal or low-power emergencies, and no attempt to keep the
+*network* up — are recorded in the design's *Known limits*
+(`docs/superpowers/specs/2026-09-09-native-roam-design.md`), not re-litigated here.
+
 ## Roadmap, in order
 
 ### Phase two — background shells, monitors and processes. Deferred, not started.

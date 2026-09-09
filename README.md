@@ -44,6 +44,9 @@ agents are working.
   read in memory and never stored; the card carries a fixed reason unless you switch message text on.
   Deliberately *not* supported: finding requests in ordinary prose, and recovering ones that were
   missed before this existed. Both would need their own design.
+- **Roam — work with the lid shut.** One menu item keeps the Mac awake while you carry it, holds an
+  idle-sleep assertion, watches the battery, and puts the machine to sleep deliberately before the
+  charge runs out rather than letting it die mid-session. See [Roam](#roam).
 - **One queue, all sessions**, sorted by how much each is blocking you.
 - **One wait, one card.** Claude Code describes the same wait more than once — a permission
   request, then its own permission prompt, then an idle prompt a minute later. Those collapse into
@@ -696,9 +699,9 @@ The repo can now be renamed, moved or deleted without any of that following.
 ### The commands, on your PATH
 
 The binaries live inside the app bundle, which is not a directory anybody has on their `PATH`. So
-`install.sh` symlinks the four commands this README uses — `aa-status`, `aa-emit`, `aa-bridge`,
-`aa-session` — into `~/.local/bin`. Without that step every `aa-status` in these pages is a
-`command not found`, which is exactly what it used to be.
+`install.sh` symlinks the five commands this README uses — `aa-status`, `aa-emit`, `aa-bridge`,
+`aa-session`, `aa-roam` — into `~/.local/bin`. Without that step every `aa-status` in these pages is
+a `command not found`, which is exactly what it used to be.
 
 Three rules, so this cannot damage anything:
 
@@ -734,6 +737,11 @@ configuration and dragging, not by inspecting other apps' windows.
 ./uninstall.sh --purge      # also deletes the local data directory (asks first)
 ```
 
+It also releases any roam sleep block, removes the root power helper, restores your previous status
+line, and takes the command symlinks back out — each by the same ownership rules as the hooks, and
+each saying so rather than doing it quietly. If it cannot restore the status line it refuses and
+changes nothing rather than guessing, and tells you which backup holds your original.
+
 Ownership comes from a manifest, per settings file, as exact command strings — and from nothing
 else. There is **no fallback that infers ownership from a binary's name**: a hook of yours that runs
 a different executable also called `aa-emit`, with different arguments, is not ours and is never
@@ -747,6 +755,67 @@ the ones it is about to write, which is what keeps a second install idempotent w
 The login item is owned the same way: its plist is parsed and must match our exact `Label` **and**
 `ProgramArguments` before it is overwritten or removed. A grep for the label would match a comment
 or somebody else's agent.
+
+## Roam
+
+Close the laptop, put it in a bag, and the session keeps running. That is the whole feature, and
+everything below exists because the obvious way to build it — turn the machine's sleep off — is the
+one that flattens a battery in a bag and loses the work.
+
+**Turn it on from the menu.** Right-click the bubble, or use the menu-bar item: **Turn roam on**.
+The bubble grows a halo while roam is live, and the same item turns it off. The item explains
+itself rather than only greying out:
+
+| It says | Meaning |
+|---|---|
+| `Turn roam on` / `Turn roam off` | Ready, or live. |
+| `Roam needs the power helper — run install.sh` | The privileged helper is not installed, so there is nothing that can hold the lid-close block. |
+| `Retry roam — another tool holds sleep` | Something else already set the machine's sleep block — a `sudo pmset -a disablesleep 1` by hand, or a roam plugin still installed. Warden will not take over a setting it did not set. Clear the other hold and click again; the item stays clickable so a retry is always available. |
+
+**The status line says so too.** Roam adds a `🎒 roam on` segment to your Claude Code status line,
+so a session in another window can tell at a glance that the lid is safe to close. The installer
+takes over your existing status line to add it — carrying every other segment through verbatim,
+including hand-added ones — and shows you the resulting wrapper and asks before writing anything.
+
+**It ends itself before the battery does.** While roaming, Warden checks the charge on every lease
+heartbeat. At or below `roamBatteryThreshold` (10% by default, in `config.json`), on battery, it
+tells you what is happening, gives the sleep block back, confirms that landed, and *then* sleeps
+the Mac — in that order, so you never get told the machine is asleep when it is in fact awake on a
+dying charge. It also refuses to *start* below that threshold rather than starting and sleeping ten
+seconds later.
+
+**How it holds the machine awake.** `SleepDisabled` is a single machine-wide setting only root can
+write, with no notion of who set it. So a small root daemon — `aa-powerd`, installed by
+`install.sh` into `/Library/PrivilegedHelperTools` — owns it and hands it out as an exclusive
+lease that Warden must renew every 10 seconds. Nothing else in Agent Warden needs privilege, and
+nothing else lives there. If Warden crashes, is killed, or simply stops renewing, the lease expires
+and the daemon clears the block: the dangerous state cannot outlive the thing that asked for it.
+
+### If your Mac will not sleep
+
+The repair, printed by the installer and repeated here because it is the one thing worth having
+written down somewhere you can find without the app:
+
+```bash
+sudo pmset -a disablesleep 0
+```
+
+That clears the machine-wide block by hand. You need it only if the helper was stopped or removed
+while it was holding one — `launchd` will not restart a *hung* daemon, and the daemon's own startup
+reconciliation cannot run until it starts again. `./uninstall.sh` releases the block before it
+removes the helper, and warns if `SleepDisabled` is still set afterwards.
+
+Check the current state at any time:
+
+```bash
+pmset -g | grep SleepDisabled     # 0 = your Mac sleeps normally
+aa-roam status                    # what Warden thinks, and whether the file is stale
+```
+
+**Known limits, stated rather than papered over.** The lease authenticates a *user*, not this
+application: any process running as you can hold the block. Power assertions are advisory and macOS
+may override them under a thermal or low-power emergency. And roam keeps the machine awake — it
+does not keep the *network* up; a session that needs a connection still needs one.
 
 ## Querying it without a screenshot
 
