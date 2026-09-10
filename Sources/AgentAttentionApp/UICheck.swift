@@ -2631,9 +2631,20 @@ enum UICheck {
 
         print("Menu bar")
         let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        statusItem.button?.title = "● \(items.count)"
         check("the status item has a button", statusItem.button != nil)
-        check("the status item shows the pending count", statusItem.button?.title == "● 5")
+        // The two symbols the menu bar shares with the bubble. Asserted because the fallback for
+        // an unresolvable symbol is a text bullet, which would silently undo the one thing that
+        // makes the menu bar item recognisable as the same app as the bubble on the desktop.
+        let quiet = NSImage(systemSymbolName: "shield", accessibilityDescription: nil)
+        let waiting = NSImage(systemSymbolName: "shield.lefthalf.filled", accessibilityDescription: nil)
+        check("the bubble's quiet shield resolves for the menu bar", quiet != nil)
+        check("the bubble's waiting shield resolves for the menu bar", waiting != nil)
+        // Template rendering is what lets the menu bar tint it for the current appearance; an
+        // untinted glyph is invisible against half the wallpapers a person might use.
+        quiet?.isTemplate = true
+        statusItem.button?.image = quiet
+        check("the menu bar glyph is a template, so macOS can tint it",
+              statusItem.button?.image?.isTemplate == true)
         NSStatusBar.system.removeStatusItem(statusItem)
 
         check("no self-check ever asked to activate, script or drive a real terminal",

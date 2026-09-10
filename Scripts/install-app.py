@@ -35,7 +35,14 @@ import subprocess
 import sys
 from pathlib import Path
 
-EXECUTABLES = ["AgentWarden", "aa-emit", "aa-status", "aa-bridge", "aa-session"]
+# Everything the installer verifies and links. `aa-roam` belongs here because the status-line
+# wrapper invokes it by name from PATH, so an install that does not link it leaves the roam badge
+# silently absent.
+#
+# `aa-powerd` is deliberately NOT here: it is installed root-owned into /Library by
+# Scripts/install-powerd.sh rather than linked from the bundle, and it answers no `--version`,
+# which the verification below requires of every name in this list.
+EXECUTABLES = ["AgentWarden", "aa-emit", "aa-status", "aa-bridge", "aa-session", "aa-roam"]
 LAUNCH_LABEL = "dev.agentwarden"
 
 

@@ -818,6 +818,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func installStatusItem() {
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         item.button?.font = .monospacedDigitSystemFont(ofSize: 13, weight: .regular)
+        // The count sits to the right of the shield, the same way the bubble draws its badge.
+        item.button?.imagePosition = .imageLeading
         statusItem = item
         updateStatusItem(items: [])
     }
@@ -825,7 +827,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func updateStatusItem(items: [AttentionItem]) {
         guard let statusItem else { return }
         let count = items.count
-        statusItem.button?.title = count == 0 ? "◦" : "● \(count)"
+        // **The bubble's own glyph, for the same reason it is a shield there.** These are two
+        // surfaces of one app, and a bullet in the menu bar next to a shield on the desktop gave
+        // a person nothing to recognise it by — which is exactly how it was missed.
+        // `shield.lefthalf.filled` when something waits, matching `BubbleView.update`, so the two
+        // never disagree about whether anything needs you.
+        //
+        // Template rendering is not decoration: the menu bar changes colour with the wallpaper and
+        // the system appearance, and only a template image is tinted to follow it. A literal text
+        // bullet could not.
+        let symbol = count > 0 ? "shield.lefthalf.filled" : "shield"
+        let glyph = NSImage(systemSymbolName: symbol, accessibilityDescription: "Agent Warden")
+            ?? NSImage(systemSymbolName: "shield", accessibilityDescription: "Agent Warden")
+        glyph?.isTemplate = true
+        statusItem.button?.image = glyph
+        // The old text is kept as the fallback rather than deleted: if neither symbol resolves,
+        // an item with no image and no title is an invisible menu bar item, and the one thing this
+        // surface must never be is absent.
+        statusItem.button?.title = glyph == nil
+            ? (count == 0 ? "◦" : "● \(count)")
+            : (count == 0 ? "" : " \(count)")
+        statusItem.button?.setAccessibilityLabel(
+            count == 0 ? "Agent Warden, nothing waiting" : "Agent Warden, \(count) waiting")
         statusItem.button?.toolTip = count == 0
             ? "Agent Warden — nothing waiting"
             : items.map { "\($0.kind.glyph) \($0.identity.projectName): \($0.reasonLine)" }.joined(separator: "\n")
