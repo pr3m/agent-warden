@@ -60,7 +60,7 @@ struct TabHandshakeTests {
     @Test("The terminal that owns the session's tty identifies itself, even among identical tabs")
     func theRightTabAnswers() throws {
         let fake = FakeTerminals(
-            names: ["T-1": "redmy", "T-2": "redmy", "T-3": "redmy", "T-4": "redmy"],
+            names: ["T-1": "atlas", "T-2": "atlas", "T-3": "atlas", "T-4": "atlas"],
             ttys: ["/dev/ttys003": "T-3"])
 
         let found = try handshake(fake).identifyTerminal(onTTY: "/dev/ttys003").get()
@@ -91,7 +91,7 @@ struct TabHandshakeTests {
     @Test("A session in no Ghostty tab links to nothing at all")
     func aSessionElsewhereIsNotLinked() {
         // The tty belongs to no terminal Ghostty knows: tmux, another terminal, a detached process.
-        let fake = FakeTerminals(names: ["T-1": "redmy", "T-2": "wunda"], ttys: [:])
+        let fake = FakeTerminals(names: ["T-1": "atlas", "T-2": "orbit"], ttys: [:])
 
         let outcome = handshake(fake).identifyTerminal(onTTY: "/dev/ttys099")
 
@@ -101,7 +101,7 @@ struct TabHandshakeTests {
 
     @Test("A session with no terminal device is refused before anything is written")
     func noTTYMeansNoHandshake() {
-        let fake = FakeTerminals(names: ["T-1": "redmy"], ttys: ["/dev/ttys001": "T-1"])
+        let fake = FakeTerminals(names: ["T-1": "atlas"], ttys: ["/dev/ttys001": "T-1"])
 
         for tty in [nil, "", "-"] {
             #expect(handshake(fake).identifyTerminal(onTTY: tty) == .failure(.noTTY))
@@ -111,7 +111,7 @@ struct TabHandshakeTests {
 
     @Test("A token left over from a previous attempt is refused, not matched")
     func aStaleTokenIsRefused() {
-        let fake = FakeTerminals(names: ["T-1": "⟦agent-warden:old⟧", "T-2": "redmy"],
+        let fake = FakeTerminals(names: ["T-1": "⟦agent-warden:old⟧", "T-2": "atlas"],
                                  ttys: ["/dev/ttys002": "T-2"])
 
         #expect(handshake(fake).identifyTerminal(onTTY: "/dev/ttys002") == .failure(.ambiguous))
@@ -120,7 +120,7 @@ struct TabHandshakeTests {
 
     @Test("A tty that cannot be written to is a failure, not a guess")
     func anUnwritableTTYFails() {
-        let fake = FakeTerminals(names: ["T-1": "redmy"], ttys: ["/dev/ttys001": "T-1"],
+        let fake = FakeTerminals(names: ["T-1": "atlas"], ttys: ["/dev/ttys001": "T-1"],
                                  refuseWrite: true)
 
         #expect(handshake(fake).identifyTerminal(onTTY: "/dev/ttys001") == .failure(.couldNotWrite))
@@ -129,11 +129,11 @@ struct TabHandshakeTests {
     @Test("Ghostty being busy for a moment does not lose the answer")
     func aTransientRefusalIsRetried() throws {
         // The first read fails outright, so the pre-read cannot even start; the handshake reports it.
-        let blocked = FakeTerminals(names: ["T-1": "redmy"], ttys: ["/dev/ttys001": "T-1"], failReads: 1)
+        let blocked = FakeTerminals(names: ["T-1": "atlas"], ttys: ["/dev/ttys001": "T-1"], failReads: 1)
         #expect(handshake(blocked).identifyTerminal(onTTY: "/dev/ttys001") == .failure(.ghostty(.busy)))
 
         // A refusal *during* polling is transient, and the next attempt still finds the tab.
-        let flaky = FakeTerminals(names: ["T-1": "redmy"], ttys: ["/dev/ttys001": "T-1"])
+        let flaky = FakeTerminals(names: ["T-1": "atlas"], ttys: ["/dev/ttys001": "T-1"])
         let subject = TabHandshake(titles: flaky,
                                    readAll: { flaky.readAll() },
                                    attempts: 5, interval: 0, pause: { _ in })

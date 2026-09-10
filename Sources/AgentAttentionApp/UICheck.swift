@@ -556,7 +556,7 @@ enum UICheck {
         // MARK: Names and details
 
         print("Names and details")
-        let longName = SessionNameStyle.humanised("wundamental-exec-cashflow-truth-sensitivity-train")
+        let longName = SessionNameStyle.humanised("atlas-exec-cashflow-truth-sensitivity-train")
         check("a long session name is rendered in full, not truncated",
               labels.contains { $0.contains(longName) })
         check("the long name wraps instead of being clipped",
@@ -880,13 +880,13 @@ enum UICheck {
         let branchLabels = panel.debugTextValues
         check("the worktree is the row's name, not the generated registry label",
               branchLabels.contains(SessionNameStyle.humanised("alpha"))
-              && !branchLabels.contains { $0.contains("redmy-e9") })
+              && !branchLabels.contains { $0.contains("atlas-e9") })
         check("the branch read from the directory is on the row",
-              branchLabels.contains { $0.hasPrefix("cs/alpha · ") })
+              branchLabels.contains { $0.hasPrefix("dev/alpha · ") })
         check("the generated registry label is kept for Details, not thrown away", {
             let alphaRow = panel.debugRowAccessibilityLabels.firstIndex { $0.hasPrefix(SessionNameStyle.humanised("alpha")) }
             let details = alphaRow.flatMap { panel.debugDetailsMenu(rowIndex: $0)?.items.map(\.title) } ?? []
-            return details.contains { $0.contains("redmy-e9") && $0.contains("client-generated") }
+            return details.contains { $0.contains("atlas-e9") && $0.contains("client-generated") }
         }())
         check("a branch merely stamped at launch is never shown as the current one",
               !branchLabels.contains { $0 == "main" })
@@ -898,11 +898,11 @@ enum UICheck {
         // somewhere else is not this session's branch, and is no longer accepted as one.
         let urgentIndex = urgentSessions.count - 2
         urgentSessions[urgentIndex].identity.branch =
-            .git(.branch("cs/red658-plan-vs-ledger"), path: urgentSessions[urgentIndex].identity.cwd, at: now)
+            .git(.branch("dev/task58-plan-vs-ledger"), path: urgentSessions[urgentIndex].identity.cwd, at: now)
         panel.render(items: items, sessions: urgentSessions, snoozedCount: 2, maxVisible: 4,
                      now: now, anchor: bubble.frame)
         let urgentRow = panel.debugRowAccessibilityLabels.firstIndex { $0.contains("Permission needed: Bash") }
-        check("a row with an open request still shows its branch", panel.debugTextValues.contains("cs/red658-plan-vs-ledger"))
+        check("a row with an open request still shows its branch", panel.debugTextValues.contains("dev/task58-plan-vs-ledger"))
         check("and the request is still the line under it", urgentRow != nil)
         check("nothing is clipped by the extra line", panel.debugClippedLabels.isEmpty)
 
@@ -1922,7 +1922,7 @@ enum UICheck {
         _ = chainRow(matchingLink)
         check("adding the chain clipped nothing", panel.debugClippedLabels.isEmpty)
         check("and the branch line is still shown in full",
-              panel.debugTextValues.contains { $0.hasPrefix("cs/alpha") })
+              panel.debugTextValues.contains { $0.hasPrefix("dev/alpha") })
 
         panel.onLinkTerminal = nil
         panel.pairingLookup = { _ in nil }
@@ -1942,7 +1942,7 @@ enum UICheck {
             terminalAppBundleID: GhosttyAdapter.bundleIdentifier,
             terminalAppPID: 900, terminalAppStartedAt: 1000,
             terminalID: "term-1", tabID: "tab-1", windowID: "win-1",
-            terminalName: "red645-own-capital", pairedAt: now)
+            terminalName: "task42-own-capital", pairedAt: now)
 
         // Ghostty is not actually running here, so activation must refuse — which is exactly what
         // it should do. What is being checked is the *decision*, not a live focus.
@@ -2563,11 +2563,11 @@ enum UICheck {
             _ = shot("the representative panel", items: realItems, sessions: realSessions,
                      snoozed: 0, url: base)
             check("the fixture shows recognisable worktree names, not sample identifiers",
-                  panel.debugTextValues.contains("RED-658 · Plan vs ledger")
+                  panel.debugTextValues.contains("TASK-58 · Plan vs ledger")
                   && panel.debugTextValues.contains("Client info · T1"))
             check("each one carries the branch read from its directory",
-                  panel.debugTextValues.contains("cs/red658-plan-vs-ledger")
-                  && panel.debugTextValues.contains("cs/exec-cashflow-truth"))
+                  panel.debugTextValues.contains("dev/task58-plan-vs-ledger")
+                  && panel.debugTextValues.contains("dev/exec-cashflow-truth"))
             check("and the status line is neutral, not a leftover from a check",
                   !panel.debugTextValues.contains { $0.contains("could not be saved") })
             panel.pairingLookup = { _ in nil }
@@ -2675,9 +2675,9 @@ enum UICheck {
         [
             item(kind: .approval, project: "agent-attention", detail: "Permission needed: Bash", age: 90,
                  termProgram: "ghostty", appPath: "/Applications/Ghostty.app"),
-            item(kind: .question, project: "wunda-api", detail: "Asked you a question", age: 600,
+            item(kind: .question, project: "orbit-api", detail: "Asked you a question", age: 600,
                  termProgram: "iTerm.app", appPath: "/Applications/iTerm.app", itermID: "w0t0p0:ABC-123"),
-            item(kind: .error, project: "redmy-core", detail: "Claude Code stopped with an error",
+            item(kind: .error, project: "atlas-core", detail: "Claude Code stopped with an error",
                  age: 720, termProgram: "Apple_Terminal",
                  appPath: "/System/Applications/Utilities/Terminal.app", tty: "/dev/ttys003"),
             item(kind: .workComplete, project: "docs", detail: "Turn complete", age: 20,
@@ -2691,8 +2691,8 @@ enum UICheck {
         let now = Date()
         return [
             SessionState(identity: identity(project: "alpha", termProgram: "ghostty", appPath: "/Applications/Ghostty.app",
-                                            title: "redmy-e9", titleSource: "derived",
-                                            branch: .git(.branch("cs/alpha"), path: "/Users/dev/code/alpha", at: now)),
+                                            title: "atlas-e9", titleSource: "derived",
+                                            branch: .git(.branch("dev/alpha"), path: "/Users/dev/code/alpha", at: now)),
                          activity: .working, lastEventAt: now, lastActivityAt: now),
             SessionState(identity: identity(project: "beta", termProgram: "ghostty", appPath: "/Applications/Ghostty.app"),
                          activity: .awaitingUser, lastEventAt: now, lastActivityAt: now),
@@ -2706,7 +2706,7 @@ enum UICheck {
                          activity: .unknown, lastEventAt: now, lastActivityAt: now,
                          background: BackgroundEvidence(availability: .unknown, observedAt: now)),
             // A name long enough that truncating it would make it useless, paused on its own work.
-            SessionState(identity: identity(project: "wundamental-exec-cashflow-truth-sensitivity-train",
+            SessionState(identity: identity(project: "atlas-exec-cashflow-truth-sensitivity-train",
                                             termProgram: "ghostty", appPath: "/Applications/Ghostty.app",
                                             tty: "/dev/ttys009"),
                          activity: .backgroundWaiting, lastEventAt: now, lastActivityAt: now,
@@ -2729,11 +2729,11 @@ enum UICheck {
                      branch: .git(.branch(branch), path: "/Users/dev/code/\(project)", at: now))
         }
 
-        let planVsLedger = worktree("red658-plan-vs-ledger", "cs/red658-plan-vs-ledger")
-        let clientInfo = worktree("client-info-t1", "cs/client-info-t1")
-        let cashflow = worktree("exec-cashflow-truth", "cs/exec-cashflow-truth")
-        let ownCapital = worktree("red645-own-capital", "cs/red645-own-capital")
-        let sensitivity = worktree("sensitivity-train", "cs/sensitivity-train")
+        let planVsLedger = worktree("task58-plan-vs-ledger", "dev/task58-plan-vs-ledger")
+        let clientInfo = worktree("client-info-t1", "dev/client-info-t1")
+        let cashflow = worktree("exec-cashflow-truth", "dev/exec-cashflow-truth")
+        let ownCapital = worktree("task42-own-capital", "dev/task42-own-capital")
+        let sensitivity = worktree("sensitivity-train", "dev/sensitivity-train")
 
         func item(_ identity: SessionIdentity, _ kind: AttentionKind, _ detail: String,
                   _ age: TimeInterval) -> AttentionItem {
@@ -2837,7 +2837,7 @@ final class ScriptedGhostty: GhosttyControlling, @unchecked Sendable {
     private var index = 0
     var selected: Result<TerminalSnapshot, GhosttyFailure> = .success(
         TerminalSnapshot(terminalID: "term-1", tabID: "tab-1", windowID: "win-1",
-                         name: "red645-own-capital", workingDirectory: "/w/red645-own-capital"))
+                         name: "task42-own-capital", workingDirectory: "/w/task42-own-capital"))
 
     init(fingerprints: [ProcessFingerprint?]) { self.fingerprints = fingerprints }
 

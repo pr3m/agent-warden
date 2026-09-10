@@ -85,10 +85,10 @@ struct SessionTargetingTests {
 
     @Test("The identifying help is enough to find the tab by hand")
     func identifyingHelp() {
-        let help = TerminalTarget.identifyingHelp(for: ghostty(project: "wunda-api", session: "9f2c-4a1b-full-id"))
+        let help = TerminalTarget.identifyingHelp(for: ghostty(project: "orbit-api", session: "9f2c-4a1b-full-id"))
         let joined = help.joined(separator: "\n")
 
-        #expect(joined.contains("project: wunda-api"))
+        #expect(joined.contains("project: orbit-api"))
         #expect(joined.contains("session: 9f2c-4a1b-full-id"), "the full id, not the abbreviated one")
         #expect(joined.contains("tty: /dev/ttys004"))
         #expect(joined.contains("claude pid: 4242"))

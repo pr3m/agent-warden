@@ -6,7 +6,7 @@ import Foundation
 /// called what somebody chose to call it — never something derived from a transcript, a directory or
 /// a model. A tab title qualifies: the user typed it, or a tool they installed writes it on their
 /// behalf. Until the handshake existed there was no way to read it, so the fallback was the worktree
-/// folder — which is why four tabs in one repository all read "Redmy" while their tabs plainly said
+/// folder — which is why four tabs in one repository all read "Atlas" while their tabs plainly said
 /// `client-info t1`, `release prep` and `velocity analysis`.
 ///
 /// What is stripped is decoration that changes second by second and belongs to the terminal rather

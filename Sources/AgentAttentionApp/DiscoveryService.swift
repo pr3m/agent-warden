@@ -49,7 +49,7 @@ final class DiscoveryService {
         guard !report.verified.isEmpty else { return report }
 
         // The registry knows where each session was launched; the transcript's last line knows
-        // where it is working now. Reading a bounded tail is what turns "redmy" into the worktree
+        // where it is working now. Reading a bounded tail is what turns "atlas" into the worktree
         // the session actually sits in.
         let projects = claudeHome.appendingPathComponent("projects", isDirectory: true)
         report.verified = report.verified.map { found in

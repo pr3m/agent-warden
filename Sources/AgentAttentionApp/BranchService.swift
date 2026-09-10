@@ -5,7 +5,7 @@ import AgentAttentionCore
 ///
 /// The transcript stamps `gitBranch` when a session starts and never revisits it. Five live sessions
 /// on this machine were therefore all labelled `main` while their working directories were on
-/// `cs/client-info-t1`, `cs/red645-own-capital` and so on. Reading the directory is the only way to
+/// `dev/client-info-t1`, `dev/task42-own-capital` and so on. Reading the directory is the only way to
 /// know, so that is what this does — and it does it under the same rules as everything else here:
 /// read-only, bounded, and honest about failure.
 ///

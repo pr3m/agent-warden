@@ -17,7 +17,7 @@ struct PairingTests {
             terminalAppBundleID: "com.mitchellh.ghostty",
             terminalAppPID: ghosttyPID, terminalAppStartedAt: ghosttyStart,
             terminalID: terminalID, tabID: "tab-1", windowID: "win-1",
-            terminalName: "red645-own-capital", workingDirectory: "/w/red645-own-capital",
+            terminalName: "task42-own-capital", workingDirectory: "/w/task42-own-capital",
             pairedAt: Fixture.origin
         )
     }
@@ -130,11 +130,11 @@ struct PairingTests {
 
     @Test("A terminal id is never derived from a tty, a title or a directory")
     func nothingIsSynthesised() {
-        var identity = Fixture.identity(session: "sess-1", project: "red645-own-capital")
+        var identity = Fixture.identity(session: "sess-1", project: "task42-own-capital")
         identity.termProgram = "ghostty"
         identity.terminalAppPath = "/Applications/Ghostty.app"
         identity.tty = "/dev/ttys004"
-        identity.title = "red645-own-capital"
+        identity.title = "task42-own-capital"
 
         // Everything a guess could be built from is present, and no link is. Still app-only.
         let plan = TerminalTarget.plan(for: identity, pairing: nil)

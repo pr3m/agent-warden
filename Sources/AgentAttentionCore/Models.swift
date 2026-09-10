@@ -152,8 +152,8 @@ public struct SessionIdentity: Codable, Sendable, Equatable {
     /// Verbatim `nameSource` from the registry: how that name came to exist.
     ///
     /// It is the difference between a name somebody chose and one the client generated. On this
-    /// machine the observed values are `derived` and `auto`, producing labels like `redmy-36` and
-    /// `redmy-e9` — six sessions in one repository, distinguishable only by two characters. Those
+    /// machine the observed values are `derived` and `auto`, producing labels like `atlas-36` and
+    /// `atlas-e9` — six sessions in one repository, distinguishable only by two characters. Those
     /// are identifiers, not names, and they belong in Details.
     public var titleSource: String?
     /// Branch, from the transcript tail. Stamped at session start and never revisited, so it is
@@ -308,7 +308,7 @@ public struct SessionIdentity: Codable, Sendable, Equatable {
     ///
     /// Only a reading taken from the directory the session is actually in qualifies. Two things
     /// were previously allowed to stand in for it and must not: the branch stamped into the
-    /// transcript at launch (observed saying `main` for five sessions each on their own `cs/…`
+    /// transcript at launch (observed saying `main` for five sessions each on their own `dev/…`
     /// branch), and a reading taken in a directory the session has since left. Both are kept — the
     /// first as `launchBranch`, the second discarded on merge — and neither is called current.
     /// The three readings that are statements about the directory: it is on a branch, it is on a
@@ -776,12 +776,12 @@ public enum EngineEffect: Sendable, Equatable {
 ///
 /// Strictly typographic. It splits on the delimiters that are already there, sentence-cases the
 /// words, and uppercases a token that is *already* a ticket identifier. It never adds a word, never
-/// expands an abbreviation, and never consults content — `red658-plan-vs-ledger` becomes
-/// `RED-658 · Plan vs ledger` because every part of that was in the folder name.
+/// expands an abbreviation, and never consults content — `task58-plan-vs-ledger` becomes
+/// `TASK-58 · Plan vs ledger` because every part of that was in the folder name.
 ///
 /// A name a person chose is never touched by any of this.
 public enum SessionNameStyle {
-    /// `red658` → `RED-658`. Letters then digits, nothing else, and short enough to be an id.
+    /// `task58` → `TASK-58`. Letters then digits, nothing else, and short enough to be an id.
     static func ticketID(_ token: String) -> String? {
         guard token.count >= 4, token.count <= 12 else { return nil }
         let letters = token.prefix { $0.isLetter }

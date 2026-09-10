@@ -203,7 +203,7 @@ the product. If `cc` is unavailable the fixture reports a failure rather than sk
 
 Claude Code's registry supplies `name` and `nameSource`. Only a name whose source says a person chose
 it (`user`, `custom`, `explicit`, `manual`, `set`, `named`) is used as the label. Observed values here
-are `derived` and `auto`, producing `redmy-36`, `redmy-0c`, `redmy-6e`, `redmy-e9` — four sessions in
+are `derived` and `auto`, producing `atlas-36`, `atlas-0c`, `atlas-6e`, `atlas-e9` — four sessions in
 one repository, two characters apart. Those are identifiers. The row shows the **worktree**; the
 generated label is preserved verbatim in Details with its source. No name is derived from transcript
 content or from a model.
@@ -211,9 +211,9 @@ content or from a model.
 ### 2.17 The branch is read from the directory
 
 The transcript stamps `gitBranch` at session start and never revisits it. Verified here: all five
-live worktree sessions reported `main` while actually on `cs/client-info-t1`,
-`cs/red658-plan-vs-ledger`, `cs/sensitivity-train`, `cs/red645-own-capital` and
-`cs/exec-cashflow-truth`.
+live worktree sessions reported `main` while actually on `dev/client-info-t1`,
+`dev/task58-plan-vs-ledger`, `dev/sensitivity-train`, `dev/task42-own-capital` and
+`dev/exec-cashflow-truth`.
 
 `GitBranchProbe` runs `git -C <cwd> --no-optional-locks branch --show-current`, off the main thread,
 with `GIT_OPTIONAL_LOCKS=0`, `GIT_TERMINAL_PROMPT=0`, no stdin, a 2-second timeout and a kill after
@@ -284,9 +284,9 @@ app is still reported, labelled a record. Queue freshness, app presence, unproce
 the newest message's age are four separate fields. New exit code 5.
 
 **Metadata authority re-verified.** All five live worktree sessions independently confirmed on
-`cs/client-info-t1`, `cs/red658-plan-vs-ledger`, `cs/sensitivity-train`, `cs/red645-own-capital`,
-`cs/exec-cashflow-truth`; the sixth reports `notARepository`. `redmy-36`, `redmy-6e`, `redmy-0c` and
-`redmy-e9` are demoted to Details with the worktree as the label.
+`dev/client-info-t1`, `dev/task58-plan-vs-ledger`, `dev/sensitivity-train`, `dev/task42-own-capital`,
+`dev/exec-cashflow-truth`; the sixth reports `notARepository`. `atlas-36`, `atlas-6e`, `atlas-0c` and
+`atlas-e9` are demoted to Details with the worktree as the label.
 
 ### 2.20 A session can be linked to its Ghostty tab
 
@@ -647,7 +647,7 @@ touches the title and its source only. It never replaces the working directory o
 the registry records where a session was *launched*.
 
 **The launch branch masqueraded as the current one.** `branchFact` fell back to the transcript's
-`gitBranch`, observed reading `main` for five sessions each on their own `cs/…` branch. It now
+`gitBranch`, observed reading `main` for five sessions each on their own `dev/…` branch. It now
 returns only a `git` reading, taken in the directory the session is in **now**, and only when that
 reading is a statement about the branch (`branch`, `detached`, `notARepository`). A failure to read
 is reported through `branchAvailability` (`pending`, `denied`, `timedOut`), and the launch stamp is

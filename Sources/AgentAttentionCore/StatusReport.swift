@@ -213,7 +213,7 @@ public struct StatusReport: Codable, Sendable, Equatable {
         public var branchReadAt: Date?
         public var branchPath: String?
         /// **Deprecated.** The branch stamped into the transcript when the session started. It was
-        /// observed reading `main` for five sessions each on their own `cs/…` branch, so it is not
+        /// observed reading `main` for five sessions each on their own `dev/…` branch, so it is not
         /// an answer to "which branch is this on". Kept for existing consumers; use `branch`.
         public var gitBranch: String?
         /// Has a real hook ever reported for this session? Deliberately separate from `attention`:

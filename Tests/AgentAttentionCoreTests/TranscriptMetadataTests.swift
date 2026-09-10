@@ -48,11 +48,11 @@ final class TranscriptMetadataTests {
     @Test("The newest cwd wins")
     func latestCwd() throws {
         let url = try write([
-            line(cwd: "/Users/dev/code/redmy"),
-            line(cwd: "/Users/dev/code/redmy/worktrees/sensitivity-train", branch: "sensitivity-train"),
+            line(cwd: "/Users/dev/code/atlas"),
+            line(cwd: "/Users/dev/code/atlas/worktrees/sensitivity-train", branch: "sensitivity-train"),
         ])
         let summary = TranscriptMetadata.tail(of: url)
-        #expect(summary.cwd == "/Users/dev/code/redmy/worktrees/sensitivity-train")
+        #expect(summary.cwd == "/Users/dev/code/atlas/worktrees/sensitivity-train")
         #expect(summary.gitBranch == "sensitivity-train")
         #expect(summary.sessionID == "s1")
     }
@@ -121,17 +121,17 @@ final class TranscriptMetadataTests {
     @Test("The transcript is found from the launch directory Claude Code records")
     func locatingTheTranscript() throws {
         let projects = root.appendingPathComponent("projects")
-        let slug = "-Users-christjanschumann-dev-redmy"
+        let slug = "-Users-alex-dev-atlas"
         try FileManager.default.createDirectory(at: projects.appendingPathComponent(slug),
                                                 withIntermediateDirectories: true)
         let transcript = projects.appendingPathComponent("\(slug)/sess-1.jsonl")
         try Data("{}\n".utf8).write(to: transcript)
 
         #expect(TranscriptMetadata.locate(sessionID: "sess-1",
-                                          cwd: "/Users/christjanschumann/dev/redmy",
+                                          cwd: "/Users/alex/dev/atlas",
                                           projectsRoot: projects) == transcript)
         #expect(TranscriptMetadata.locate(sessionID: "missing",
-                                          cwd: "/Users/christjanschumann/dev/redmy",
+                                          cwd: "/Users/alex/dev/atlas",
                                           projectsRoot: projects) == nil)
         // Without a cwd to build the slug from, a bounded search still finds it.
         #expect(TranscriptMetadata.locate(sessionID: "sess-1", cwd: nil, projectsRoot: projects) == transcript)
@@ -154,7 +154,7 @@ final class TranscriptMetadataTests {
 @Suite("Discovery enrichment")
 struct DiscoveryEnrichmentTests {
     private var discovered: DiscoveredSession {
-        let record = RegistryRecord(sessionID: "s1", pid: 4242, cwd: "/Users/dev/code/redmy")
+        let record = RegistryRecord(sessionID: "s1", pid: 4242, cwd: "/Users/dev/code/atlas")
         return DiscoveredSession(record: record, identity: record.sessionIdentity())
     }
 
@@ -163,16 +163,16 @@ struct DiscoveryEnrichmentTests {
         // The registry says where `claude` was started; the transcript says where it is now. For a
         // session in a worktree those differ, and the worktree is the useful label.
         let enriched = discovered.enriched(withTranscript: .init(
-            cwd: "/Users/dev/code/redmy/worktrees/sensitivity-train", gitBranch: "sensitivity-train"))
-        #expect(enriched.identity.cwd == "/Users/dev/code/redmy/worktrees/sensitivity-train")
+            cwd: "/Users/dev/code/atlas/worktrees/sensitivity-train", gitBranch: "sensitivity-train"))
+        #expect(enriched.identity.cwd == "/Users/dev/code/atlas/worktrees/sensitivity-train")
         #expect(enriched.identity.gitBranch == "sensitivity-train")
-        #expect(enriched.record.cwd == "/Users/dev/code/redmy", "the record itself is not rewritten")
+        #expect(enriched.record.cwd == "/Users/dev/code/atlas", "the record itself is not rewritten")
     }
 
     @Test("An empty transcript changes nothing")
     func emptyTranscriptIsHarmless() {
         let enriched = discovered.enriched(withTranscript: .init())
-        #expect(enriched.identity.cwd == "/Users/dev/code/redmy")
+        #expect(enriched.identity.cwd == "/Users/dev/code/atlas")
         #expect(enriched.identity.gitBranch == nil)
     }
 }

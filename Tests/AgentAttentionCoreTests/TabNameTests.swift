@@ -5,7 +5,7 @@ import Testing
 /// What a tab is called, once the live decoration is off it.
 ///
 /// The names here are real ones from a running desk: four tabs in one repository, all of which the
-/// app called "Redmy" because the worktree folder was the only name it could reach.
+/// app called "Atlas" because the worktree folder was the only name it could reach.
 @Suite("Reading a tab's name")
 struct TabNameTests {
 
@@ -13,7 +13,7 @@ struct TabNameTests {
         ("⠦ client-info t1 ·92%", "client-info t1"),
         ("✅ release prep ·75%", "release prep"),
         ("⠹ velocity analysis", "velocity analysis"),
-        ("◑ wunda-961", "wunda-961"),
+        ("◑ orbit-961", "orbit-961"),
         ("⠧ agent-warden", "agent-warden"),
         ("? client-info t1 ·92%", "client-info t1"),
     ])
@@ -23,7 +23,7 @@ struct TabNameTests {
 
     @Test("A plain name is left exactly as it is")
     func aPlainNameSurvives() {
-        #expect(TabName.readable("redmy") == "redmy")
+        #expect(TabName.readable("atlas") == "atlas")
         #expect(TabName.readable("Sales CRM — offer flow") == "Sales CRM — offer flow")
     }
 

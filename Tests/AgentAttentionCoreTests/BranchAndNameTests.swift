@@ -4,11 +4,11 @@ import Testing
 
 /// What a session is *called*, and what branch it is *on*.
 ///
-/// Both were wrong in a way that mattered. Six sessions in one repository were labelled `redmy-36`,
-/// `redmy-0c`, `redmy-6e`, `redmy-e9` — client-generated identifiers, two characters apart. And all
-/// five live sessions reported `main` while their working directories were on `cs/client-info-t1`,
-/// `cs/red645-own-capital`, `cs/sensitivity-train`, `cs/red658-plan-vs-ledger` and
-/// `cs/exec-cashflow-truth`, because the transcript stamps `gitBranch` once at session start.
+/// Both were wrong in a way that mattered. Six sessions in one repository were labelled `atlas-36`,
+/// `atlas-0c`, `atlas-6e`, `atlas-e9` — client-generated identifiers, two characters apart. And all
+/// five live sessions reported `main` while their working directories were on `dev/client-info-t1`,
+/// `dev/task42-own-capital`, `dev/sensitivity-train`, `dev/task58-plan-vs-ledger` and
+/// `dev/exec-cashflow-truth`, because the transcript stamps `gitBranch` once at session start.
 @Suite("Names and branches")
 struct BranchAndNameTests {
 
@@ -26,19 +26,19 @@ struct BranchAndNameTests {
     // MARK: - Naming
 
     @Test("A client-generated label never becomes the session's name", arguments: [
-        ("redmy-36", "derived"), ("redmy-e9", "derived"), ("client-info-foundation", "auto"),
+        ("atlas-36", "derived"), ("atlas-e9", "derived"), ("client-info-foundation", "auto"),
     ])
     func generatedLabelsDoNotWin(name: String, source: String) {
-        let id = identity(cwd: "/Users/dev/redmy/redmy-core/.worktrees/red645-own-capital",
+        let id = identity(cwd: "/Users/dev/atlas/atlas-core/.worktrees/task42-own-capital",
                           title: name, titleSource: source)
-        #expect(id.displayName == "red645-own-capital", "the worktree is what a person calls it")
+        #expect(id.displayName == "task42-own-capital", "the worktree is what a person calls it")
         #expect(id.generatedLabel == name, "and the generated one is kept, for Details")
         #expect(!id.titleIsHumanChosen)
     }
 
     @Test("A name a person chose does win", arguments: ["user", "custom", "explicit", "MANUAL"])
     func humanNamesWin(source: String) {
-        let id = identity(cwd: "/Users/dev/redmy", title: "Cashflow rewrite", titleSource: source)
+        let id = identity(cwd: "/Users/dev/atlas", title: "Cashflow rewrite", titleSource: source)
         #expect(id.displayName == "Cashflow rewrite")
         #expect(id.titleIsHumanChosen)
         #expect(id.generatedLabel == nil, "it is already on screen; Details need not repeat it")
@@ -47,14 +47,14 @@ struct BranchAndNameTests {
     @Test("A name with no source at all is not assumed to be meaningful")
     func unknownSourceIsNotTrusted() {
         // Nothing demonstrates a person chose it, so it does not get to be the label.
-        let id = identity(cwd: "/Users/dev/redmy/worktrees/alpha", title: "redmy-7f", titleSource: nil)
+        let id = identity(cwd: "/Users/dev/atlas/worktrees/alpha", title: "atlas-7f", titleSource: nil)
         #expect(id.displayName == "alpha")
-        #expect(id.generatedLabel == "redmy-7f")
+        #expect(id.generatedLabel == "atlas-7f")
     }
 
     @Test("With no name at all, the worktree stands alone")
     func fallsBackToFolder() {
-        #expect(identity(cwd: "/Users/dev/redmy/.worktrees/sensitivity-train").displayName == "sensitivity-train")
+        #expect(identity(cwd: "/Users/dev/atlas/.worktrees/sensitivity-train").displayName == "sensitivity-train")
     }
 
     // MARK: - Which branch is believed
@@ -62,19 +62,19 @@ struct BranchAndNameTests {
     @Test("A branch read from the directory beats the one stamped at launch")
     func gitBeatsTranscript() {
         let now = Date()
-        let id = identity(cwd: "/w/red645-own-capital",
+        let id = identity(cwd: "/w/task42-own-capital",
                           gitBranch: "main",
-                          branch: .git(.branch("cs/red645-own-capital"), path: "/w/red645-own-capital", at: now))
+                          branch: .git(.branch("dev/task42-own-capital"), path: "/w/task42-own-capital", at: now))
         let fact = id.branchFact
-        #expect(fact?.branch == "cs/red645-own-capital")
+        #expect(fact?.branch == "dev/task42-own-capital")
         #expect(fact?.source == "git")
-        #expect(fact?.summary == "cs/red645-own-capital")
+        #expect(fact?.summary == "dev/task42-own-capital")
     }
 
     @Test("With no reading of our own, there is no current branch — only a launch one")
     func transcriptIsNeverCurrent() {
         // The rule changed deliberately. The launch value was observed saying `main` for five
-        // sessions that were each on their own `cs/…` branch, so standing in for the current branch
+        // sessions that were each on their own `dev/…` branch, so standing in for the current branch
         // is exactly what it must not do. It is kept, labelled, somewhere else.
         let id = identity(cwd: "/w/alpha", gitBranch: "main")
         #expect(id.branchFact == nil, "a launch stamp is not a reading")
@@ -100,8 +100,8 @@ struct BranchAndNameTests {
 
     @Test("A branch name on stdout with exit 0 is a branch")
     func classifyBranch() {
-        let reading = GitBranchProbe.classify(status: 0, stdout: Data("cs/red658-plan-vs-ledger\n".utf8), stderr: Data())
-        #expect(reading == .branch("cs/red658-plan-vs-ledger"))
+        let reading = GitBranchProbe.classify(status: 0, stdout: Data("dev/task58-plan-vs-ledger\n".utf8), stderr: Data())
+        #expect(reading == .branch("dev/task58-plan-vs-ledger"))
     }
 
     @Test("Exit 0 with nothing printed is a detached HEAD, not an empty branch")
@@ -134,7 +134,7 @@ struct BranchAndNameTests {
     }
 
     @Test("Ordinary ref characters are fine", arguments: [
-        "main", "cs/red645-own-capital", "feature/JIRA-123_thing", "release/1.2.3", "user@host",
+        "main", "dev/task42-own-capital", "feature/JIRA-123_thing", "release/1.2.3", "user@host",
     ])
     func acceptsRealNames(raw: String) {
         #expect(GitBranchProbe.validBranchName(raw) == raw)
@@ -182,10 +182,10 @@ struct BranchAndNameTests {
         let before = engine.session("s1")
 
         let cwd = try! #require(before?.identity.cwd)
-        #expect(engine.apply(branch: .git(.branch("cs/alpha"), path: cwd, at: clock.now), sessionID: "s1"))
+        #expect(engine.apply(branch: .git(.branch("dev/alpha"), path: cwd, at: clock.now), sessionID: "s1"))
 
         let after = engine.session("s1")
-        #expect(after?.identity.branch?.branch == "cs/alpha")
+        #expect(after?.identity.branch?.branch == "dev/alpha")
         #expect(after?.identity.cwd == before?.identity.cwd, "a hook's directory is never overwritten")
         #expect(after?.activity == before?.activity)
         #expect(engine.pendingCount == 1, "and the ask is untouched")
@@ -198,15 +198,15 @@ struct BranchAndNameTests {
         // stale value right — it was never read from the directory in the first place.
         let clock = TestClock(Fixture.origin)
         let engine = AttentionEngine(config: .default, clock: clock, liveness: StubLiveness(), restoring: nil)
-        var id = Fixture.identity(session: "s1", project: "red645-own-capital")
+        var id = Fixture.identity(session: "s1", project: "task42-own-capital")
         id.gitBranch = "main"
         engine.ingest(Fixture.event(session: "s1", signal: .activity, at: clock.now,
                                     hookEvent: "PostToolUse", identity: id))
         #expect(engine.session("s1")?.identity.branchFact == nil, "the launch stamp is not current")
         #expect(engine.session("s1")?.identity.launchBranch?.branch == "main", "but it is kept")
 
-        engine.apply(branch: .git(.branch("cs/red645-own-capital"), path: id.cwd, at: clock.now), sessionID: "s1")
-        #expect(engine.session("s1")?.identity.branchFact?.branch == "cs/red645-own-capital")
+        engine.apply(branch: .git(.branch("dev/task42-own-capital"), path: id.cwd, at: clock.now), sessionID: "s1")
+        #expect(engine.session("s1")?.identity.branchFact?.branch == "dev/task42-own-capital")
         #expect(engine.session("s1")?.identity.branchFact?.source == "git")
         #expect(engine.session("s1")?.activity == .working, "and its state is untouched")
     }
@@ -217,7 +217,7 @@ struct BranchAndNameTests {
         let engine = AttentionEngine(config: .default, clock: clock, liveness: StubLiveness(), restoring: nil)
         engine.ingest(Fixture.event(session: "s1", signal: .activity, at: clock.now, hookEvent: "PostToolUse"))
 
-        #expect(!engine.apply(branch: .git(.branch("cs/somewhere-else"), path: "/other/place", at: clock.now),
+        #expect(!engine.apply(branch: .git(.branch("dev/somewhere-else"), path: "/other/place", at: clock.now),
                               sessionID: "s1"),
                 "a probe that finished after the session moved must not label the new directory")
         #expect(engine.session("s1")?.identity.branch == nil)
@@ -230,13 +230,13 @@ struct BranchAndNameTests {
         engine.ingest(Fixture.event(session: "s1", signal: .activity, at: clock.now, hookEvent: "PostToolUse"))
         let cwd = engine.session("s1")!.identity.cwd
 
-        engine.apply(branch: .git(.branch("cs/first"), path: cwd, at: clock.now), sessionID: "s1")
+        engine.apply(branch: .git(.branch("dev/first"), path: cwd, at: clock.now), sessionID: "s1")
         clock.advance(120)
-        engine.apply(branch: .git(.branch("cs/second"), path: cwd, at: clock.now), sessionID: "s1")
-        #expect(engine.session("s1")?.identity.branch?.branch == "cs/second", "the branch changed")
+        engine.apply(branch: .git(.branch("dev/second"), path: cwd, at: clock.now), sessionID: "s1")
+        #expect(engine.session("s1")?.identity.branch?.branch == "dev/second", "the branch changed")
 
-        engine.apply(branch: .git(.branch("cs/first"), path: cwd, at: Fixture.origin), sessionID: "s1")
-        #expect(engine.session("s1")?.identity.branch?.branch == "cs/second", "a late older probe loses")
+        engine.apply(branch: .git(.branch("dev/first"), path: cwd, at: Fixture.origin), sessionID: "s1")
+        #expect(engine.session("s1")?.identity.branch?.branch == "dev/second", "a late older probe loses")
     }
 
     @Test("Sessions are re-read when their reading ages, or when they move")
@@ -247,7 +247,7 @@ struct BranchAndNameTests {
         let cwd = engine.session("s1")!.identity.cwd
 
         #expect(engine.sessionsNeedingBranchRead(at: clock.now, staleAfter: 60).count == 1, "never read")
-        engine.apply(branch: .git(.branch("cs/alpha"), path: cwd, at: clock.now), sessionID: "s1")
+        engine.apply(branch: .git(.branch("dev/alpha"), path: cwd, at: clock.now), sessionID: "s1")
         #expect(engine.sessionsNeedingBranchRead(at: clock.now, staleAfter: 60).isEmpty)
 
         clock.advance(120)
@@ -291,10 +291,10 @@ struct ProvenanceTests {
     @Test("A name we already had can still learn where it came from")
     func provenanceFillsForAKnownTitle() {
         var held = Fixture.identity(session: "s1")
-        held.title = "redmy-e9"                 // learned from a hook, with no source
+        held.title = "atlas-e9"                 // learned from a hook, with no source
         held.titleSource = nil
 
-        held.fillGaps(from: registryScan(session: "s1", title: "redmy-e9", source: "derived"))
+        held.fillGaps(from: registryScan(session: "s1", title: "atlas-e9", source: "derived"))
 
         #expect(held.titleSource == "derived", "the gap was the source, not the title")
         #expect(!held.titleIsHumanChosen, "and knowing that is what keeps it out of the label")
@@ -306,7 +306,7 @@ struct ProvenanceTests {
         held.title = "something the user typed"
         held.titleSource = nil
 
-        held.fillGaps(from: registryScan(session: "s1", title: "redmy-e9", source: "derived"))
+        held.fillGaps(from: registryScan(session: "s1", title: "atlas-e9", source: "derived"))
 
         #expect(held.titleSource == nil, "a different name's provenance says nothing about this one")
         #expect(held.title == "something the user typed")
@@ -374,7 +374,7 @@ struct ProvenanceTests {
         held.branch = .git(.branch("main"), path: "/w/project-root", at: Fixture.origin)
         var older = Fixture.identity(session: "s1")
         older.cwd = "/w/worktree"
-        older.branch = .git(.branch("cs/topic"), path: "/w/worktree", at: Fixture.origin)
+        older.branch = .git(.branch("dev/topic"), path: "/w/worktree", at: Fixture.origin)
 
         held.fillGaps(from: older)
 

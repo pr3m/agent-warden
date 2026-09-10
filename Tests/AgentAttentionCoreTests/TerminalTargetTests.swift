@@ -183,7 +183,7 @@ struct TerminalTargetTests {
         #expect(Fixture.identity(session: "s1", termProgram: nil, terminalAppPath: "/Applications/Ghostty.app").terminalName == "Ghostty")
         #expect(Fixture.identity(session: "s1", termProgram: "Apple_Terminal", terminalAppPath: nil).terminalName == "Terminal")
         #expect(Fixture.identity(session: "s1", termProgram: nil, terminalAppPath: nil).terminalName == "terminal")
-        #expect(Fixture.identity(session: "s1", project: "wunda-632").projectName == "wunda-632")
+        #expect(Fixture.identity(session: "s1", project: "orbit-632").projectName == "orbit-632")
         #expect(SessionIdentity(sessionID: "s", cwd: "").projectName == "unknown")
         #expect(SessionIdentity(sessionID: "abcdef0123456789", cwd: "/x").shortSessionID == "abcdef01")
     }

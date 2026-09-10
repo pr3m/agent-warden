@@ -348,7 +348,7 @@ public final class MockGhostty: GhosttyControlling, @unchecked Sendable {
         fingerprint: ProcessFingerprint? = ProcessFingerprint(pid: 900, startedAt: 1000),
         selected: Result<TerminalSnapshot, GhosttyFailure> = .success(
             TerminalSnapshot(terminalID: "term-1", tabID: "tab-1", windowID: "win-1",
-                             name: "red645-own-capital", workingDirectory: "/w/red645-own-capital")),
+                             name: "task42-own-capital", workingDirectory: "/w/task42-own-capital")),
         existing: Set<String> = ["term-1"]
     ) {
         self.fingerprint = fingerprint

@@ -4,7 +4,7 @@
 Why this script exists and is not a one-liner in install.sh: the live machine this was written
 against has `statusLine.command` pointing at a wrapper the `claude-code-roam` plugin generated —
 `roam-wrapped-statusline.sh` — which itself chains the user's own status line *and* carries a
-hand-added "redmy heavy-run lock" segment with a comment warning it is lost if the wrapper is ever
+hand-added third-party segment with a comment warning it is lost if the wrapper is ever
 regenerated. Uninstalling that plugin deletes the wrapper (and both chained segments) outright.
 This script's entire job is to take over that wrapper without regenerating it: read whatever is
 there now, swap out only the one line that invoked the plugin's indicator, and copy every other
@@ -14,7 +14,7 @@ Design rules, in order of importance (mirrors Scripts/manage-hooks.py's list; re
 docstring too, since this one intentionally does not repeat every rationale it already covers):
 
 1. **Never regenerate from a template when there is something to carry over.** A hand-added
-   segment (the heavy-run lock is the concrete example, but the rule is general) has no other copy
+   segment (a third-party status segment is the concrete example, but the rule is general) has no other copy
    anywhere — it lives only in the wrapper file. Rebuilding the wrapper from a template would
    silently delete it. So: splice one line, copy the rest byte-for-byte.
 2. **The replace step touches only lines that identifiably invoke the old roam-plugin indicator.**
@@ -79,7 +79,7 @@ DEFAULT_WRAPPER_PATH = os.path.expanduser("~/.claude/bin/agent-warden-statusline
 # The literal regex requirement from this task's brief, matched per-line against whatever file
 # statusLine.command currently points at. Deliberately narrow: it must match the plugin's own
 # indicator invocation and nothing else, because every line that does *not* match is copied
-# through untouched — that is what preserves a hand-added segment (the heavy-run lock) that this
+# through untouched — that is what preserves a hand-added segment that this
 # script has no other way to know about.
 ROAM_INVOCATION_RE = re.compile(r"roam-cli[\"'\s]+indicator|roam-indicator\.sh")
 

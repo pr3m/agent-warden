@@ -111,7 +111,7 @@ final class SessionRegistryTests {
         // Real names are worktree plus task and run well past 80 characters. Clipping in the parser
         // would make the full name unrecoverable in the panel and in Details, where the whole point
         // is that two similar worktrees can be told apart.
-        let longName = "wundamental-exec-cashflow-truth-sensitivity-train — reconcile ledger against the plan and explain the variance"
+        let longName = "atlas-exec-cashflow-truth-sensitivity-train — reconcile ledger against the plan and explain the variance"
         #expect(longName.count > 80)
 
         try writeRecord(sessionID: "sess-long", pid: 4242, title: longName)

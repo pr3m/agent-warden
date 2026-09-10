@@ -38,7 +38,7 @@ public enum BranchReading: Sendable, Equatable {
 /// The source matters more than it looks. A session transcript stamps `gitBranch` when the session
 /// starts and never revisits it, so a session that moved into a worktree afterwards carries the
 /// branch it launched on — observed on this machine as five sessions all claiming `main` while their
-/// working directories were on `cs/…` branches. A reading taken from the directory *now* is a
+/// working directories were on `dev/…` branches. A reading taken from the directory *now* is a
 /// different kind of fact, and is labelled as one.
 public struct BranchFact: Codable, Sendable, Equatable {
     /// "git" — read from the working directory just now. "transcript" — stamped at session start.

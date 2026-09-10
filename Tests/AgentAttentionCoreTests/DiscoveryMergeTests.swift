@@ -432,15 +432,15 @@ struct DiscoveryReviewTests {
         let clock = TestClock(Fixture.origin)
         let engine = AttentionEngine(config: .default, clock: clock, liveness: StubLiveness(), restoring: nil)
 
-        let first = record(cwd: "/Users/dev/code/redmy", title: "redmy")
+        let first = record(cwd: "/Users/dev/code/atlas", title: "atlas")
         engine.apply(discovery: report([DiscoveredSession(record: first, identity: first.sessionIdentity(birth: 1))]), at: clock.now)
-        #expect(engine.session("s1")?.identity.cwd == "/Users/dev/code/redmy")
+        #expect(engine.session("s1")?.identity.cwd == "/Users/dev/code/atlas")
 
         clock.advance(60)
-        let moved = record(cwd: "/Users/dev/code/redmy/worktrees/sensitivity-train", title: "sensitivity train")
+        let moved = record(cwd: "/Users/dev/code/atlas/worktrees/sensitivity-train", title: "sensitivity train")
         engine.apply(discovery: report([DiscoveredSession(record: moved, identity: moved.sessionIdentity(birth: 1))]), at: clock.now)
 
-        #expect(engine.session("s1")?.identity.cwd == "/Users/dev/code/redmy/worktrees/sensitivity-train")
+        #expect(engine.session("s1")?.identity.cwd == "/Users/dev/code/atlas/worktrees/sensitivity-train")
         #expect(engine.session("s1")?.identity.title == "sensitivity train")
     }
 

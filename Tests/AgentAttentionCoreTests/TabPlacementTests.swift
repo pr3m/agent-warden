@@ -17,8 +17,8 @@ struct TabPlacementTests {
 
     @Test("A whole window's tabs come back in order, numbered from one")
     func aWindowIsRead() {
-        let text = record(1, 1, "ADE9AC8B", "✅ redmy ·91%")
-            + record(1, 2, "95864ADE", "✅ redmy")
+        let text = record(1, 1, "ADE9AC8B", "✅ atlas ·91%")
+            + record(1, 2, "95864ADE", "✅ atlas")
             + record(1, 3, "037D96FA", "⠦ groom red tickets")
             + record(2, 1, "B5EE12C7", "👻")
         let tabs = TabLayout.parse(text)
@@ -40,7 +40,7 @@ struct TabPlacementTests {
 
     @Test("A title containing a newline is one tab, not two")
     func aNewlineInATitleInventsNothing() {
-        let tabs = TabLayout.parse(record(1, 1, "A", "release\nprep") + record(1, 2, "B", "redmy"))
+        let tabs = TabLayout.parse(record(1, 1, "A", "release\nprep") + record(1, 2, "B", "atlas"))
         #expect(tabs.count == 2)
         #expect(tabs[0].name == "release\nprep")
     }
@@ -58,7 +58,7 @@ struct TabPlacementTests {
 
     @Test("A good tab survives a bad one beside it")
     func oneBadRecordDoesNotLoseTheRest() {
-        let tabs = TabLayout.parse("1\u{1F}x\u{1F}A\u{1E}" + record(1, 2, "B", "redmy"))
+        let tabs = TabLayout.parse("1\u{1F}x\u{1F}A\u{1E}" + record(1, 2, "B", "atlas"))
         #expect(tabs.count == 1)
         #expect(tabs[0].terminalID == "B")
     }
@@ -102,8 +102,8 @@ struct TabTitleSyncTests {
 
     @Test("A tab dragged to a new position gets the new number")
     func areorderIsPickedUp() {
-        let saved = ["s1": pairing(session: "s1", terminal: "A", name: "redmy", index: 5)]
-        let seen = ["A": TabPlacement(terminalID: "A", tabIndex: 2, windowIndex: 1, name: "redmy")]
+        let saved = ["s1": pairing(session: "s1", terminal: "A", name: "atlas", index: 5)]
+        let seen = ["A": TabPlacement(terminalID: "A", tabIndex: 2, windowIndex: 1, name: "atlas")]
         #expect(TabLayout.applying(placements: seen, to: saved)["s1"]?.tabIndex == 2)
     }
 
@@ -111,8 +111,8 @@ struct TabTitleSyncTests {
     /// that counted as a change, the links file would be rewritten several times a second.
     @Test("The spinner turning is not a change")
     func decorationIsNotAChange() {
-        let saved = ["s1": pairing(session: "s1", terminal: "A", name: "redmy", index: 1)]
-        for title in ["⠦ redmy ·91%", "✅ redmy ·04%", "⠹ redmy"] {
+        let saved = ["s1": pairing(session: "s1", terminal: "A", name: "atlas", index: 1)]
+        for title in ["⠦ atlas ·91%", "✅ atlas ·04%", "⠹ atlas"] {
             let seen = ["A": TabPlacement(terminalID: "A", tabIndex: 1, windowIndex: 1, name: title)]
             #expect(TabLayout.applying(placements: seen, to: saved).isEmpty,
                     "\(title) says nothing new about the session")
@@ -121,31 +121,31 @@ struct TabTitleSyncTests {
 
     @Test("A tab showing only decoration keeps the name it had")
     func anEmptyTitleDoesNotEraseAName() {
-        let saved = ["s1": pairing(session: "s1", terminal: "A", name: "redmy", index: 1)]
+        let saved = ["s1": pairing(session: "s1", terminal: "A", name: "atlas", index: 1)]
         let seen = ["A": TabPlacement(terminalID: "A", tabIndex: 4, windowIndex: 1, name: "👻")]
         let changed = TabLayout.applying(placements: seen, to: saved)
-        #expect(changed["s1"]?.terminalName == "redmy")   // kept
+        #expect(changed["s1"]?.terminalName == "atlas")   // kept
         #expect(changed["s1"]?.tabIndex == 4)             // and the position is still true
     }
 
     /// The rule the whole pairing design rests on: a tab is found by its id, never by its name.
     @Test("A session whose terminal is not in the reading is left completely alone")
     func anAbsentTerminalChangesNothing() {
-        let saved = ["s1": pairing(session: "s1", terminal: "GONE", name: "redmy", index: 1)]
+        let saved = ["s1": pairing(session: "s1", terminal: "GONE", name: "atlas", index: 1)]
         let seen = ["OTHER": TabPlacement(terminalID: "OTHER", tabIndex: 1, windowIndex: 1,
-                                          name: "redmy")]
+                                          name: "atlas")]
         #expect(TabLayout.applying(placements: seen, to: saved).isEmpty)
     }
 
     @Test("Two windows can both hold a tab 1, and each row says so")
     func twoWindowsBothStartAtOne() {
         let saved = [
-            "s1": pairing(session: "s1", terminal: "A", name: "redmy"),
-            "s2": pairing(session: "s2", terminal: "B", name: "wunda-961"),
+            "s1": pairing(session: "s1", terminal: "A", name: "atlas"),
+            "s2": pairing(session: "s2", terminal: "B", name: "orbit-961"),
         ]
         let seen = [
-            "A": TabPlacement(terminalID: "A", tabIndex: 1, windowIndex: 1, name: "redmy"),
-            "B": TabPlacement(terminalID: "B", tabIndex: 1, windowIndex: 2, name: "wunda-961"),
+            "A": TabPlacement(terminalID: "A", tabIndex: 1, windowIndex: 1, name: "atlas"),
+            "B": TabPlacement(terminalID: "B", tabIndex: 1, windowIndex: 2, name: "orbit-961"),
         ]
         let changed = TabLayout.applying(placements: seen, to: saved)
         #expect(changed["s1"]?.tabIndex == 1)
@@ -159,13 +159,13 @@ struct NumberedNameTests {
 
     @Test("The number goes in front, exactly as asked for")
     func theNumberLeads() {
-        #expect(TabName.numbered(index: 1, name: "redmy") == "1 - redmy")
+        #expect(TabName.numbered(index: 1, name: "atlas") == "1 - atlas")
         #expect(TabName.numbered(index: 5, name: "planned backlog review")
             == "5 - planned backlog review")
     }
 
     @Test("A session with no tab gets no number", arguments: [nil, 0, -1, 100])
     func nothingIsInventedForAnUnlinkedSession(index: Int?) {
-        #expect(TabName.numbered(index: index, name: "redmy") == "redmy")
+        #expect(TabName.numbered(index: index, name: "atlas") == "atlas")
     }
 }

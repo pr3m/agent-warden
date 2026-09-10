@@ -82,23 +82,23 @@ struct BoundedProcessTests {
         // handed the last chunk of the pipe. Tearing the handlers down at that moment loses the
         // branch name that was already written — intermittently, which is the worst kind. Repeated,
         // because a race that only shows one time in ten is still a race.
-        let (outcome, _) = run("printf 'cs/red658-plan-vs-ledger\\n'; printf 'warn\\n' >&2; exit 0",
+        let (outcome, _) = run("printf 'dev/task58-plan-vs-ledger\\n'; printf 'warn\\n' >&2; exit 0",
                                timeout: 5)
 
         #expect(!outcome.timedOut)
         #expect(outcome.status == 0)
-        #expect(String(decoding: outcome.stdout, as: UTF8.self).contains("cs/red658-plan-vs-ledger"),
+        #expect(String(decoding: outcome.stdout, as: UTF8.self).contains("dev/task58-plan-vs-ledger"),
                 "attempt \(attempt) came back empty, so the drain lost a completed write")
         #expect(String(decoding: outcome.stderr, as: UTF8.self).contains("warn"))
     }
 
     @Test("An ordinary quick child is not slowed down by any of this")
     func quickChildIsQuick() {
-        let (outcome, elapsed) = run("printf 'cs/red645-own-capital\\n'", timeout: 5)
+        let (outcome, elapsed) = run("printf 'dev/task42-own-capital\\n'", timeout: 5)
         #expect(!outcome.timedOut)
         #expect(outcome.status == 0)
         #expect(String(decoding: outcome.stdout, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
-                == "cs/red645-own-capital")
+                == "dev/task42-own-capital")
         #expect(elapsed < 3)
     }
 

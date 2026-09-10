@@ -262,11 +262,11 @@ REPO="$WORK/branch-repo"
 mkdir -p "$REPO"
 git -C "$REPO" init -q -b main >/dev/null 2>&1
 git -C "$REPO" -c user.email=t@example.com -c user.name=t commit -q --allow-empty -m init >/dev/null 2>&1
-git -C "$REPO" checkout -q -b cs/red645-own-capital >/dev/null 2>&1
+git -C "$REPO" checkout -q -b dev/task42-own-capital >/dev/null 2>&1
 
 emit '{"hook_event_name":"UserPromptSubmit","session_id":"smoke-branch","cwd":"'"$REPO"'"}' --signal activity
 OUT="$("$APP" --selftest)"
-contains "the branch is read from the working directory" "branch=cs/red645-own-capital/git" "$OUT"
+contains "the branch is read from the working directory" "branch=dev/task42-own-capital/git" "$OUT"
 missing "and the launch-time stamp is not what is shown" "branch=main/git" "$OUT"
 
 # A real directory that is not a repository, and a directory that is not there at all. Both are
@@ -283,7 +283,7 @@ missing "and a failure never turns into a branch name" "branch=denied/git" "$OUT
 missing "and neither is ever labelled with a branch name" "branch=main/" "$OUT"
 
 # Nothing in the repository was touched.
-check "the repository is still on its branch" "cs/red645-own-capital" "$(git -C "$REPO" --no-optional-locks branch --show-current)"
+check "the repository is still on its branch" "dev/task42-own-capital" "$(git -C "$REPO" --no-optional-locks branch --show-current)"
 check "and its working tree is clean" "" "$(git -C "$REPO" status --porcelain)"
 
 emit '{"hook_event_name":"SessionEnd","session_id":"smoke-branch","cwd":"'"$REPO"'","reason":"logout"}' --signal sessionEnd

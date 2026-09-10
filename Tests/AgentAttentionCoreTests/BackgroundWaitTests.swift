@@ -9,7 +9,7 @@ import Testing
 /// only what the arrays actually say is claimed, an unrecognised status makes the reading uncertain,
 /// and an explicit ask stays actionable whatever is running.
 ///
-/// Observed on this machine, and the reason this exists: `red645-own-capital` started a background
+/// Observed on this machine, and the reason this exists: `task42-own-capital` started a background
 /// Bash task at 08:27:55Z, ended its turn at 08:28:39Z still describing work in progress, and the
 /// app announced "work complete".
 @Suite("Background work")

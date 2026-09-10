@@ -678,7 +678,7 @@ final class AttentionPanelController {
         // What the tab is called wins over what the folder is called.
         //
         // The old fallback was the worktree directory, because the tab title was unreachable — so
-        // four sessions in one repository all read "Redmy" while their tabs plainly said
+        // four sessions in one repository all read "Atlas" while their tabs plainly said
         // `client-info t1`, `release prep` and `velocity analysis`. A tab title is not a derived
         // name: somebody chose it. It is only used when this session is *linked* to that tab, so it
         // is the name of this session's own terminal and not the closest-looking one.
@@ -1024,7 +1024,7 @@ final class AttentionPanelController {
     /// The branch, when we read it from the directory, and then the state.
     ///
     /// Only a `git` reading gets to appear here. The transcript's branch is stamped at session start
-    /// and was observed saying `main` for five sessions that were each on their own `cs/…` branch —
+    /// and was observed saying `main` for five sessions that were each on their own `dev/…` branch —
     /// showing that on the row would be worse than showing nothing.
     static func rowSubtitle(_ session: SessionState, now: Date, ttl: TimeInterval) -> String {
         let state = stateLine(session, now: now, ttl: ttl)
@@ -1192,7 +1192,7 @@ final class AttentionPanelController {
     /// The current branch, when we read it from the directory ourselves.
     ///
     /// Only a `git` reading qualifies. The transcript's branch is stamped at session start and was
-    /// observed saying `main` for five sessions that were each on their own `cs/…` branch.
+    /// observed saying `main` for five sessions that were each on their own `dev/…` branch.
     static func branchLine(_ identity: SessionIdentity) -> String? {
         guard let branch = identity.branchFact, branch.source == "git" else { return nil }
         switch branch.state {

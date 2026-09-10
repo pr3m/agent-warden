@@ -102,7 +102,7 @@ public enum TranscriptMetadata {
         return nil
     }
 
-    /// "/Users/dev/code/redmy" → "-Users-dev-code-redmy"
+    /// "/Users/dev/code/atlas" → "-Users-dev-code-atlas"
     static func slug(for path: String) -> String {
         var slug = path.replacingOccurrences(of: "/", with: "-")
         slug = slug.replacingOccurrences(of: ".", with: "-")
