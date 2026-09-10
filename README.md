@@ -13,6 +13,32 @@ agents are working.
 > `agent-attention` / `AgentAttention` spelling. This project is unrelated to any other tool called
 > "warden".
 
+## What you need
+
+| | |
+|---|---|
+| **macOS 14+** | required |
+| **A Swift 6 toolchain** | required to build — Xcode or the Command Line Tools |
+| **Claude Code** | required; Warden reads its hooks and transcripts |
+| **Any terminal** | Warden watches sessions wherever they run. Clicking a row navigates to the session in Ghostty, iTerm2, Apple Terminal or tmux — see [Clicking a row](#clicking-a-row--what-actually-happens) for exactly what each one gets. Sessions in an unrecognised terminal still appear, still alert, and still open their conversation. |
+| **Ghostty** | optional, and only for *tab linking* — pinning a session to one exact tab and reading live tab titles. Everything else works without it. |
+
+Nothing is installed automatically and nothing starts at login unless you ask.
+
+Several on-screen behaviours have **not** been verified on a live machine at all — how
+the panel looks, floating over full-screen spaces, the AppleScript paths for iTerm2 / Apple
+Terminal / tmux, and the Automation prompt. [IMPLEMENTATION_REPORT.md](IMPLEMENTATION_REPORT.md) §5
+lists exactly which. Reports welcome.
+
+## Contents
+
+- [What it does](#what-it-does) · [The bubble](#the-bubble) · [What raises an alert](#what-raises-an-alert)
+- [Sessions already running](#sessions-that-were-already-running) · [Waiting on background work](#waiting-on-background-work)
+- [Names and branches](#what-a-session-is-called-and-what-branch-it-is-on) · [Linking a tab](#linking-a-session-to-its-ghostty-tab) · [Asking what a session is working on](#asking-what-a-session-is-working-on)
+- [Clicking a row](#clicking-a-row--what-actually-happens) · [The orchestration contract](#the-orchestration-contract) · [The session bridge](#the-session-bridge--sessions-warden-owns)
+- [**Install**](#install) · [Roam](#roam) · [Querying it without a screenshot](#querying-it-without-a-screenshot)
+- [How it works](#how-it-works) · [Settings](#settings) · [Development](#development) · [Status and roadmap](#status-and-roadmap)
+
 ## What it does
 
 - **A bubble, always there.** A compact graphite circle near the bottom-right corner, with a badge
@@ -32,11 +58,12 @@ agents are working.
   started — five live sessions all reported `main` while they were each on their own `feat/…` branch.
 - **Recent conversation, on request.** Ask a session what it is working on and get back what was
   actually said, attributed and timestamped. Never a summary, never automatic, never persisted.
-  **Open session** in that window goes to the linked Ghostty tab — resolving the session again at
+  **Open session** in that window goes to the session's terminal — resolving the session again at
   the click, dismissing nothing, and offering to link a tab when there is none.
-- **Link a session to its terminal tab.** Ghostty cannot tell anyone which tab a session is in, so
-  you say so once — and then *Open linked tab* focuses that exact tab, checks it landed, and refuses
-  rather than guessing when the link no longer holds.
+- **Link a session to its terminal tab.** iTerm2, Apple Terminal and tmux each identify their own
+  tab or pane, so Warden finds those on its own. Ghostty cannot tell anyone which tab a session is
+  in, so there you say so once — and then *Open linked tab* focuses that exact tab, checks it
+  landed, and refuses rather than guessing when the link no longer holds.
 - **A turn that hands something back is a request, not news.** When a session ends its turn with a
   dedicated `I need from you:` line, that shows as **Waiting for you** — even if it also left a shell
   running, because "a decision is needed" and "work is still going" are both true. A footer that says
@@ -1000,8 +1027,8 @@ Deferred, in order:
    acknowledgement, authorised replies and verified progress. Nothing about it is implemented, and
    phase one deliberately stays read-only.
 
-Several on-screen behaviours have **not** been verified on a live machine — how the panel looks,
-floating over full-screen spaces, the AppleScript paths for iTerm2 / Apple Terminal / tmux, and the
-Automation prompt. [IMPLEMENTATION_REPORT.md](IMPLEMENTATION_REPORT.md) §8 lists exactly which.
+What has been verified by running versus only in code is set out in
+[IMPLEMENTATION_REPORT.md](IMPLEMENTATION_REPORT.md) §5, and the open questions in §6. The short
+version is at the top of this file, under [What you need](#what-you-need).
 
 MIT licensed — see [LICENSE](LICENSE).

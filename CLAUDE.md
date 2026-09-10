@@ -75,7 +75,9 @@ bash Scripts/smoke-test.sh                        # real binaries, real installe
   it with `! <command>`.
 - **This repo is public.** Never introduce a private project name, client ticket key, branch
   prefix carrying someone's initials, or a real home path — in code, tests, comments, docs or
-  commit messages. Fixtures use `atlas`, `orbit-*`, `task42`, `dev/<branch>`, `alex`.
+  commit messages. Code and test fixtures use `atlas`, `orbit-*`, `task42`, `dev/<branch>`,
+  `alex`; `README.md` uses `acme-*` and `feat/…`. The two vocabularies are both fine — do not
+  "harmonise" one into the other, that is churn with no reader benefit.
   `ai.wundamental.*` is the one deliberate exception: it is the app's own reverse-DNS identity
   (bundle id, queue labels, daemon socket path) and changing it breaks installed builds.
 - Global § Git Commits & Pushes still applies in full and is **not** overridden here: no commit,
