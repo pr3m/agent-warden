@@ -180,3 +180,15 @@ a real disposable session.
   with the same leaf name look alike in the list; **Details** distinguishes them by full session id.
 - **The display name is provisional.** Repository, modules, bundle-id prefix and data directory
   keep the `AgentAttention` spelling; only user-facing strings say "Agent Warden".
+- **A bridge client's stated timeout is a third of what it waits.** `BridgeSocket.swift` sets
+  `SO_RCVTIMEO` to `timeout / 3` so a stalled trickle cannot hang forever, but the read loop treats
+  every `recv` error except `EINTR` as fatal — and a socket read timeout reports `EAGAIN`. The first
+  quiet third therefore ends the call. A caller asking for 30 seconds gets 10. The fix is to treat
+  `EAGAIN`/`EWOULDBLOCK` as "keep waiting until `hardStop`", which is what the surrounding
+  `while Date() < hardStop` already assumes.
+- **The at-the-desk roam nudge is configured but not implemented.** `roamNudgeEnabled` defaults to
+  `true` and `roamNudgeSnoozeMinutes` to 15, and `RoamState` carries `nudgeSnoozedUntil`, but
+  nothing reads any of it: no code path ever offers to turn roam off when the lid is open and you
+  are back at the machine. The settings are therefore inert, and read as a feature that exists.
+  Either build the nudge or drop the two keys — a default of `true` for something that never
+  happens is the worse of the two states.
