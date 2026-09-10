@@ -2525,7 +2525,7 @@ Pass the item into both menus via `BubbleMenu.Actions.roam`, and add the same it
 
 # PHASE 4 — The footer
 
-Ships when: `🎒 roam on` appears in a live Claude Code session footer, the redmy heavy-lock segment survives, and killing Warden makes the indicator stop.
+Ships when: `🎒 roam on` appears in a live Claude Code session footer, the hand-added third-party segment survives, and killing Warden makes the indicator stop.
 
 ---
 
@@ -2698,7 +2698,7 @@ Run `./Scripts/test.sh`. Report and stop. **Do not commit.**
 
 ### Task 15: The statusline migration
 
-The most delicate step, and the reason it is last. This machine's `statusLine.command` points at `~/.claude/bin/roam-wrapped-statusline.sh` — a file the roam plugin generated and owns, which chains the user's own `wunda-statusline.sh` **and** carries a hand-added redmy heavy-run-lock segment with a comment warning it is lost on regeneration. Uninstalling the plugin deletes that file and takes both with it.
+The most delicate step, and the reason it is last. This machine's `statusLine.command` points at `~/.claude/bin/roam-wrapped-statusline.sh` — a file the roam plugin generated and owns, which chains the user's own status-line script **and** carries a hand-added third-party segment with a comment warning it is lost on regeneration. Uninstalling the plugin deletes that file and takes both with it.
 
 **Files:**
 - Create: `Scripts/manage-statusline.py`
@@ -2718,7 +2718,7 @@ Model it on the existing `Scripts/manage-hooks.py` — same argument style, same
 4. Back up `~/.claude/settings.json` with a timestamp first, and record the change in `install-manifest.json`.
 5. `uninstall` — restore the previous `statusLine.command` from the manifest and delete Warden's wrapper.
 
-The parsing rule for carrying segments over: keep every line, and replace only lines matching `roam-cli["'\s]+indicator` or `roam-indicator\.sh` with the `aa-roam indicator` equivalent. Anything not matched is copied verbatim — that is what preserves the heavy-lock block.
+The parsing rule for carrying segments over: keep every line, and replace only lines matching `roam-cli["'\s]+indicator` or `roam-indicator\.sh` with the `aa-roam indicator` equivalent. Anything not matched is copied verbatim — that is what preserves the hand-added block.
 
 - [ ] **Step 2: Test the migration on a copy, not on the live file**
 
@@ -2730,7 +2730,7 @@ cp ~/.claude/bin/roam-wrapped-statusline.sh /tmp/statusline-test/
   --settings /tmp/statusline-test/settings.json --dry-run
 ```
 
-Expected: the printed wrapper contains, in order — the `wunda-statusline.sh` call, an `aa-roam indicator` call in place of the `roam-cli indicator` call, and the redmy heavy-lock block **intact, including its comment**.
+Expected: the printed wrapper contains, in order — the user's own status-line call, an `aa-roam indicator` call in place of the `roam-cli indicator` call, and the hand-added third-party block **intact, including its comment**.
 
 **Diff the two wrappers and confirm the only changed lines are the indicator ones.**
 
@@ -2751,8 +2751,8 @@ Run the installer without `--dry-run`, then in a **new** Claude Code session che
 |---|---|
 | Roam on | Footer shows `🎒 roam on` |
 | Roam off | Badge gone, everything else unchanged |
-| The redmy heavy-lock segment | Still appears when the lock is held |
-| `wunda-statusline.sh` output | Unchanged — directory, branch, model, ctx% all present |
+| The hand-added third-party segment | Still appears when its own condition holds |
+| The user's own status-line output | Unchanged — directory, branch, model, ctx% all present |
 | Kill Warden with `SIGKILL` while roaming | Badge disappears within the lease window |
 
 - [ ] **Step 5: Review checkpoint**

@@ -423,8 +423,8 @@ is already there.
 
 **This machine's current state must be handled specifically.** `statusLine.command` points
 at `~/.claude/bin/roam-wrapped-statusline.sh`, a file the roam plugin generated and owns.
-That file chains the user's own `wunda-statusline.sh` **and** carries a hand-added redmy
-heavy-run-lock segment, with a comment warning that a plugin regeneration loses it.
+That file chains the user's own status-line script **and** carries a hand-added
+third-party segment, with a comment warning that a plugin regeneration loses it.
 Uninstalling the plugin deletes the wrapper and takes both with it.
 
 So the installer must:
@@ -593,7 +593,7 @@ Four phases, each independently shippable and verifiable.
 | 1. The daemon | Helper binary in `/Library/PrivilegedHelperTools`, plist with socket activation, exclusive heartbeat lease, verified transitions, reconciliation, `install.sh` / `uninstall.sh` wiring | `pmset -g \| grep SleepDisabled` across acquire/release; kill the client and watch it revert; `SIGSTOP` the client and watch the heartbeat expire; confirm `acquire` refuses when the setting is already `1` |
 | 2. Roam itself | `RoamService`, idle-only assertion, heartbeat, EOF watch, `roam.json` with liveness, battery guard, `IOPMSleepSystem` | Enter roam, close the lid, confirm the machine stays up; force a low battery reading and confirm the ordered exit-and-sleep |
 | 3. The UI | Inset disc view, halo, `haloInset` in both geometry directions, hit-test, menu item in both menus | Toggle from each menu; the disc does not move on upgrade or after a drag; halo and pending border compose |
-| 4. The footer | `aa-roam` binary, statusline install and wrapper migration | `🎒 roam on` in a live session footer with the redmy heavy-lock segment intact; kill Warden and confirm the indicator stops printing |
+| 4. The footer | `aa-roam` binary, statusline install and wrapper migration | `🎒 roam on` in a live session footer with the hand-added third-party segment intact; kill Warden and confirm the indicator stops printing |
 
 Phase 1 is the only phase that touches the machine outside Warden's own data directory,
 and the only one needing a password. Phases 2 and 3 are app work. Phase 4 edits
