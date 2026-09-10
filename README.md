@@ -972,11 +972,11 @@ A dismissal is not time-based: it holds until the session does real work again.
 ```bash
 ./Scripts/release.sh         # build, gate, install, restart — the whole pipeline
 ./Scripts/release.sh --no-install   # build and gate only; leave the running app alone
-./Scripts/test.sh            # 847 unit and integration tests across 78 suites
-./Scripts/smoke-test.sh      # 197 assertions against the real binaries and the real installer
+./Scripts/test.sh            # 970 unit and integration tests across 96 suites
+./Scripts/smoke-test.sh      # 204 assertions against the real binaries and the real installer
 ./Scripts/build-app.sh       # build the .app bundle
 
-build/AgentWarden.app/Contents/MacOS/AgentWarden --uicheck    # 456 checks on the bubble and panel (more with --png)
+build/AgentWarden.app/Contents/MacOS/AgentWarden --uicheck    # 502 checks on the bubble and panel (more with --png)
 build/AgentWarden.app/Contents/MacOS/AgentWarden --selftest   # one refresh cycle, as text
 build/AgentWarden.app/Contents/MacOS/aa-emit --doctor         # what a hook would record here
 build/AgentWarden.app/Contents/MacOS/aa-status --json         # the queue, read-only
