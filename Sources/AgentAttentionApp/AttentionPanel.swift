@@ -39,6 +39,10 @@ final class ClosureMenuItem: NSObject {
 /// One session's row. The whole row is one click target, and it says so by lighting up under the
 /// pointer — flat when it is not, so the list reads as a list rather than as a stack of cards.
 final class SessionRowView: ClickableView {
+    /// The "not read yet" mark, drawn down the leading edge. Held here so a check can read the
+    /// colour that was actually painted rather than ask the model what it should have been.
+    weak var unreadBar: NSView?
+
     override func mouseEntered(with event: NSEvent) {
         super.mouseEntered(with: event)
         layer?.backgroundColor = NSColor.controlAccentColor.withAlphaComponent(0.16).cgColor
@@ -104,8 +108,14 @@ final class AttentionPanelController {
     private var statusResetWork: DispatchWorkItem?
     private let panelWidth: CGFloat = 380
     private var contentWidth: CGFloat { panelWidth - 24 }
-    /// What a row's text may occupy: the panel's content, less the ⋯ button and the chain icon.
-    private var rowTextWidth: CGFloat { contentWidth - 34 - 22 }
+    /// The unread bar's width plus the gap after it. Reserved on **every** row, marked or not, so
+    /// clearing a mark never slides a row's text sideways under the pointer.
+    private static let unreadGutter: CGFloat = 9
+    /// What a row's text may occupy: the panel's content, less the ⋯ button, the chain icon and
+    /// the unread gutter.
+    private var rowTextWidth: CGFloat {
+        contentWidth - 34 - 22 - AttentionPanelController.unreadGutter
+    }
     private var lastRenderAt = Date()
     private var renderedRows: [SessionRowView] = []
     private var anchor: CGRect?
@@ -229,7 +239,20 @@ final class AttentionPanelController {
         if awaitingFirstHook > 0 { parts.append("\(awaitingFirstHook) awaiting first hook") }
         if snoozedCount > 0 { parts.append("\(snoozedCount) snoozed") }
         subtitleLabel.stringValue = parts.joined(separator: " · ")
-        container.addArrangedSubview(headerRow(hasItems: !items.isEmpty))
+
+        // Three zones, and until now the panel had none: one blanket 8pt ran from the title to the
+        // footer, so the app's own chrome read as the first item of the list beneath it.
+        //
+        // Spacing and rules, never a background wash: on a plate this dark a fill subtle enough not
+        // to read as a card is too subtle to read as anything, and one strong enough to clear 3 : 1
+        // reads as an alert. The counts line stays up here rather than captioning the top group —
+        // it counts working and uncertain sessions too, and those live below the second rule.
+        let header = headerRow(hasItems: !items.isEmpty)
+        container.addArrangedSubview(header)
+        let headerRule = separator()
+        container.addArrangedSubview(headerRule)
+        container.setCustomSpacing(10, after: header)
+        container.setCustomSpacing(10, after: headerRule)
 
         if rows.isEmpty {
             let calm = AttentionPanelController.label(size: 12, weight: .regular,
@@ -245,14 +268,22 @@ final class AttentionPanelController {
         var drewSeparator = false
         let cap = max(maxVisible, 8)
         let visible = showAllSessions ? rows : Array(rows.prefix(cap))
+        var previous: NSView?
         for row in visible {
             if !drewSeparator, !row.needsYou, visible.contains(where: { $0.needsYou }) {
-                container.addArrangedSubview(separator())
+                if let previous { container.setCustomSpacing(12, after: previous) }
+                let rule = separator()
+                container.addArrangedSubview(rule)
+                container.setCustomSpacing(10, after: rule)
                 drewSeparator = true
             }
             let view = sessionRow(row)
             renderedRows.append(view)
             container.addArrangedSubview(view)
+            // Rows that want something from you sit tighter together than the quiet ones, so the
+            // top group reads as one block rather than as the first few of a long list.
+            if row.needsYou { container.setCustomSpacing(6, after: view) }
+            previous = view
         }
         // Everything tracked stays reachable. The list is capped so the panel cannot grow taller
         // than the screen, and the cap is stated rather than silently applied.
@@ -284,6 +315,8 @@ final class AttentionPanelController {
             }
         }
 
+        // The footer is chrome again, like the header, and gets the same kind of gap before it.
+        if let tail = container.arrangedSubviews.last { container.setCustomSpacing(14, after: tail) }
         container.addArrangedSubview(fullWidth(statusLabel))
         container.addArrangedSubview(footerRow())
 
@@ -307,6 +340,8 @@ final class AttentionPanelController {
         var quietLine: String
         var rank: Int
         var needsYou: Bool
+        /// Has this row's request not been read yet? The same fact the orange edge bar draws.
+        var isUnseen: Bool
 
         init(session: SessionState, item: AttentionItem?, now: Date, ttl: TimeInterval) {
             self.identity = session.identity
@@ -314,6 +349,7 @@ final class AttentionPanelController {
             self.item = item
             self.quietLine = AttentionPanelController.rowSubtitle(session, now: now, ttl: ttl)
             self.needsYou = item != nil
+            self.isUnseen = item?.isUnseen == true
             self.rank = item?.kind.rank ?? Row.quietRank(session, now: now, ttl: ttl)
         }
 
@@ -323,6 +359,7 @@ final class AttentionPanelController {
             self.item = item
             self.quietLine = "state unknown"
             self.needsYou = true
+            self.isUnseen = item.isUnseen
             self.rank = item.kind.rank
         }
 
@@ -335,9 +372,16 @@ final class AttentionPanelController {
             return 1
         }
 
-        /// Urgent first; then a stable order by name, so a re-render does not shuffle the list
-        /// under the pointer while nothing has actually changed.
+        /// Unread first, then urgent, then a stable order by name so a re-render does not shuffle
+        /// the list under the pointer while nothing has actually changed.
+        ///
+        /// Unread outranks urgency because the two are answers to different questions, and the one
+        /// the list is opened for is "what has happened since I last looked?". Ordering by kind
+        /// alone put a request you had already read and decided to leave above one you had never
+        /// seen — the mark said "new" while the position said "old news", and the mark lost. This
+        /// is the same rule the engine's own queue uses; the panel was simply not applying it.
         static func moreUrgent(_ a: Row, _ b: Row) -> Bool {
+            if a.isUnseen != b.isUnseen { return a.isUnseen }
             if a.rank != b.rank { return a.rank > b.rank }
             return a.identity.sessionID < b.identity.sessionID
         }
@@ -658,7 +702,7 @@ final class AttentionPanelController {
                 // The **item** first, whenever the row has one. A row usually has both a session
                 // record and an open request, and handing over only the session dropped the item id
                 // on the floor — so nothing could be marked read or moved down the list, and a row
-                // kept its unread dot after you had plainly just clicked it and jumped to its tab.
+                // kept its unread mark after you had plainly just clicked it and jumped to its tab.
                 if let item = row.item { self.onActivate?(item) }
                 else if let session = row.session { self.onOpenSession?(session) }
             case .showContext:
@@ -671,10 +715,6 @@ final class AttentionPanelController {
 
         let name = AttentionPanelController.label(size: 13, weight: .semibold,
                                                   color: AttentionPanelController.primaryColor)
-        // A dot on the rows you have not read yet, so the list answers "what is new here?" without
-        // being counted or opened. Drawn into the name rather than beside it: the name owns a fixed
-        // width, and a sibling view would push it or truncate it. Marks are cleared when the panel
-        // closes, not when it opens — see `markVisibleAsSeen`.
         // What the tab is called wins over what the folder is called.
         //
         // The old fallback was the worktree directory, because the tab title was unreachable — so
@@ -688,19 +728,7 @@ final class AttentionPanelController {
         let displayName = TabName.numbered(
             index: pairing?.tabIndex,
             name: TabName.readable(pairing?.terminalName) ?? identity.readableName)
-        let isUnseen = row.item?.isUnseen == true
-        if isUnseen {
-            let marked = NSMutableAttributedString(
-                string: "● ", attributes: [.foregroundColor: AttentionPanelController.unseenColor])
-            marked.append(NSAttributedString(
-                string: displayName,
-                attributes: [.foregroundColor: AttentionPanelController.primaryColor]))
-            marked.addAttribute(.font, value: NSFont.systemFont(ofSize: 13, weight: .semibold),
-                                range: NSRange(location: 0, length: marked.length))
-            name.attributedStringValue = marked
-        } else {
-            name.stringValue = displayName
-        }
+        name.stringValue = displayName
         name.maximumNumberOfLines = 2
         name.preferredMaxLayoutWidth = rowTextWidth
         name.widthAnchor.constraint(equalToConstant: rowTextWidth).isActive = true
@@ -787,9 +815,30 @@ final class AttentionPanelController {
         line.spacing = 6
         line.translatesAutoresizingMaskIntoConstraints = false
 
+        // The "you have not read this" mark: a bar down the leading edge, the full height of the
+        // row. It used to be a "● " glued to the front of the name — the most important fact in the
+        // panel drawn as its smallest element, smaller than the branch label beneath it, and only
+        // legible if you were already reading that row. A bar is a shape, so it registers in the
+        // same peripheral glance that the list is actually used with. Marks are cleared when the
+        // panel closes, not when it opens — see `markVisibleAsSeen`.
+        let unreadBar = NSView()
+        unreadBar.translatesAutoresizingMaskIntoConstraints = false
+        unreadBar.wantsLayer = true
+        unreadBar.layer?.cornerRadius = 1.5
+        unreadBar.layer?.backgroundColor = isUnseenRow(row)
+            ? AttentionPanelController.unseenColor.cgColor
+            : NSColor.clear.cgColor
+        view.addSubview(unreadBar)
+        view.unreadBar = unreadBar
+
         view.addSubview(line)
         NSLayoutConstraint.activate([
-            line.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 2),
+            unreadBar.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 2),
+            unreadBar.widthAnchor.constraint(equalToConstant: 3),
+            unreadBar.topAnchor.constraint(equalTo: view.topAnchor, constant: 4),
+            unreadBar.bottomAnchor.constraint(equalTo: view.bottomAnchor, constant: -4),
+            line.leadingAnchor.constraint(equalTo: view.leadingAnchor,
+                                          constant: 2 + AttentionPanelController.unreadGutter),
             line.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -2),
             line.topAnchor.constraint(equalTo: view.topAnchor, constant: 4),
             line.bottomAnchor.constraint(equalTo: view.bottomAnchor, constant: -4),
@@ -1120,15 +1169,17 @@ final class AttentionPanelController {
     /// window's appearance is pinned to dark, so a system switch to Light cannot resolve a semantic
     /// label into near-black on this plate. Nothing here leaks outside the panel and the bubble.
     ///
-    /// Measured against `plateColor`, these are 13.4 : 1 (primary), 10.5 : 1 (supporting),
-    /// 6.8 : 1 (muted), 6.0 : 1 (footer), 9.4 : 1 (urgent) and 9.7 : 1 (complete) — all well over
-    /// the 4.5 : 1 floor for body text, and the check that says so measures the rendered surface
-    /// rather than trusting this comment.
+    /// Measured against `plateColor`, these are 15.0 : 1 (primary), 13.4 : 1 (heading),
+    /// 10.5 : 1 (supporting), 6.8 : 1 (muted), 6.0 : 1 (footer), 9.4 : 1 (urgent), 9.7 : 1
+    /// (complete) and 7.8 : 1 (unread) — all well over the 4.5 : 1 floor for body text, and the
+    /// check that says so measures the rendered surface rather than trusting this comment.
     static let plateColor = NSColor(srgbRed: 0.13, green: 0.13, blue: 0.13, alpha: 1.0)
     static let primaryColor = NSColor(srgbRed: 0.97, green: 0.97, blue: 0.97, alpha: 1.0)
-    /// The "you have not read this" dot. The same accent as the badge, because it means the same
-    /// thing in a different place — and nothing else in the panel uses it.
-    static let unseenColor = NSColor.systemOrange
+    /// The "you have not read this" bar. Literally the badge's own colour, because it means the
+    /// same thing in a different place — and nothing else in the panel uses it. It used to say
+    /// `NSColor.systemOrange` while this comment claimed it matched the badge, which put two
+    /// different oranges on screen for one fact.
+    static let unseenColor = BubbleView.badgeColor
     static let supportingColor = NSColor(srgbRed: 0.82, green: 0.82, blue: 0.82, alpha: 1.0)
     static let headingColor = NSColor(srgbRed: 0.92, green: 0.92, blue: 0.92, alpha: 1.0)
     /// The footer only: quieter than supporting text, still well over the floor.
@@ -1411,12 +1462,32 @@ extension AttentionPanelController {
         }
     }
 
-    /// Which rendered rows carry the "not read yet" dot. Read from the drawn text, not from the
-    /// data that produced it — a check that asks the model what it said proves nothing about the row.
+    /// Where the rules that divide the panel's zones ended up, by position in the stack. The first
+    /// closes the app header; the second parts the sessions that want you from the ones that do not.
+    var debugRuleRows: [Int] {
+        container.arrangedSubviews.enumerated().compactMap { index, view in
+            (view as? NSBox)?.boxType == .separator ? index : nil
+        }
+    }
+
+    /// Where each row's text column actually starts, in that row's own coordinates. The unread
+    /// gutter is reserved whether or not the bar is painted, so these are all the same number —
+    /// otherwise reading a row would slide its text sideways under the pointer.
+    var debugRowTextOrigins: [CGFloat] {
+        renderedRows.map { row in
+            AttentionPanelController.allTextFields(in: row)
+                .map { row.convert($0.bounds, from: $0).minX }.min() ?? 0
+        }
+    }
+
+    /// Which rendered rows carry the "not read yet" bar. Read from the colour actually painted on
+    /// the row, not from the data that produced it — a check that asks the model what it said
+    /// proves nothing about the row. A row that reserves the gutter but paints it clear is unmarked.
     var debugUnseenMarkedRows: [Int] {
         renderedRows.enumerated().compactMap { index, row in
-            AttentionPanelController.allTextFields(in: row)
-                .contains { $0.attributedStringValue.string.hasPrefix("● ") } ? index : nil
+            guard let painted = row.unreadBar?.layer?.backgroundColor,
+                  painted.alpha > 0 else { return nil }
+            return index
         }
     }
 

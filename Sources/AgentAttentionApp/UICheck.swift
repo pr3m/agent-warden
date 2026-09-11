@@ -489,6 +489,37 @@ enum UICheck {
             check("only the unread one is marked when some are read and some are not",
                   panel.debugUnseenMarkedRows.count == 1)
         }
+
+        // Unread beats urgent. Ordering by kind alone parked a brand-new arrival underneath a
+        // request you had already read and decided to leave — the dot said "new" while its
+        // position said "old news". The least urgent kind, left unread, has to come first.
+        var rankMixed = readItems
+        if let quietest = rankMixed.indices.min(by: {
+            rankMixed[$0].kind.rank < rankMixed[$1].kind.rank
+        }) {
+            rankMixed[quietest].seenAt = nil
+            panel.render(items: rankMixed, sessions: sessions, snoozedCount: 2, maxVisible: 4,
+                         now: now, anchor: bubble.frame)
+            check("an unread request sits above a more urgent one that has been read",
+                  panel.debugUnseenMarkedRows == [0])
+            // The gutter is reserved on every row, painted only on the unread ones. Reserving it
+            // per-row instead would slide a row's text sideways the moment you read it.
+            check("reading a row does not move any row's text sideways",
+                  Set(panel.debugRowTextOrigins).count == 1)
+        }
+
+        // Three zones — app header, the sessions that want you, the rest — need two rules, and the
+        // first one has to close the header. The panel used to draw only the second: one blanket
+        // 8pt gap ran from the title to the footer, so its own chrome read as the first list item.
+        panel.render(items: items, sessions: sessions, snoozedCount: 2, maxVisible: 4,
+                     now: now, anchor: bubble.frame)
+        check("the app header is closed by a rule of its own", panel.debugRuleRows.first == 1)
+        check("and the sessions that want you are parted from the ones that do not",
+              panel.debugRuleRows.count == 2)
+        panel.render(items: [], sessions: sessions, snoozedCount: 0, maxVisible: 4,
+                     now: now, anchor: bubble.frame)
+        check("with nothing waiting there is a header rule and no second one",
+              panel.debugRuleRows == [1])
         panel.render(items: items, sessions: sessions, snoozedCount: 2, maxVisible: 4,
                      now: now, anchor: bubble.frame)
 

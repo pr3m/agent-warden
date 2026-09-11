@@ -139,6 +139,10 @@ a real disposable session.
 ## Known rough edges
 
 - **`AttentionEngine` is main-thread only** by convention, not enforcement.
+- **One `--uicheck --png` assertion has been red since before the zone work.** The screenshot
+  fixture links its first session to a tab whose name differs from the worktree, so the row
+  correctly shows the tab name — while the check still asserts the worktree name is on screen.
+  The panel is right and the assertion is stale; plain `--uicheck` is unaffected.
 - **Speech rate-limits to one utterance every four seconds.** A burst announces once; the panel
   still shows all of them.
 - **The heartbeat file is overwritten, not appended.** If two hooks fire between two reads, only
