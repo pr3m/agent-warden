@@ -13,6 +13,14 @@ import Foundation
 /// than the name: a leading status glyph (spinner, tick, question mark) and a trailing context
 /// percentage. A name that is *only* decoration is no name at all, and answers nil so the caller
 /// keeps whatever it had.
+///
+/// **One exception, added deliberately rather than by drift.** `SessionNamer` derives a name from a
+/// session's own slash command, and asks a model when there is no command to read. It does not
+/// weaken the rule above, because it is bounded by three things: it runs only when a person asks
+/// for it from the menu, never on a timer; it touches only tabs still showing the folder they were
+/// launched in, so a name anybody chose is never overwritten; and most of its answers come from an
+/// argument the person typed themselves. A model is the last resort, not the method. The rule this
+/// file states is about what the panel may *invent* unbidden, and that remains nothing.
 public enum TabName {
     /// A tab title reduced to the part a person would call it, or nil if nothing is left.
     public static func readable(_ title: String?) -> String? {

@@ -29,6 +29,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// `TabAutoLinker` for why it is one at a time and why it stops asking.
     private let autoLinker: TabAutoLinker
     private let autoLinkQueue = DispatchQueue(label: "ai.wundamental.agent-warden.autolink")
+    /// Naming spawns a CLI per unnamed session, so it never runs on the thread drawing the menu.
+    private let namingQueue = DispatchQueue(label: "ai.wundamental.agent-warden.naming", qos: .utility)
     /// Keeps the name and the ⌘N number on each row matching what the tab bar actually says. See
     /// `TabTitleService` for why a title has to be re-read rather than remembered.
     private let tabTitles: TabTitleService
@@ -1048,6 +1050,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 revealDataFolder: #selector(menuReveal),
                 quit: #selector(menuQuit),
                 toggleRoam: #selector(toggleRoam),
+                nameTabs: #selector(menuNameTabs),
                 placement: placementMenuItem()
             ),
             roamState: roamMenuState,
@@ -1149,6 +1152,47 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         configModifiedAt = fileModificationDate(paths.configFile)
         render()
         return saved
+    }
+
+    /// Give a name to every tab still showing the folder it was launched in.
+    ///
+    /// On request only, never on a timer, and never over a name somebody chose — the panel's rule
+    /// that a session is called what a person called it is unchanged. This is the other case: four
+    /// tabs in one fleet all reading the same folder name, because the hook that asks a session to
+    /// name itself gets one attempt and a busy session drops it.
+    ///
+    /// Off the main thread, because the fallback spawns a CLI per unnamed session and a fleet of
+    /// eight would otherwise freeze the menu for as long as that takes.
+    @objc private func menuNameTabs() {
+        let candidates = engine.sessions.values.compactMap { session -> SessionNamer.Candidate? in
+            guard let tty = session.identity.tty else { return nil }
+            let transcript = TranscriptMetadata.locate(
+                sessionID: session.identity.sessionID,
+                cwd: session.identity.cwd,
+                projectsRoot: SessionRegistry.defaultRoot()
+                    .appendingPathComponent("projects", isDirectory: true))
+            return SessionNamer.Candidate(sessionID: tty,
+                                          currentName: session.identity.displayName,
+                                          folder: session.identity.projectName,
+                                          transcript: transcript)
+        }
+        guard !candidates.isEmpty else { log("name tabs: no sessions with a terminal to name"); return }
+
+        namingQueue.async { [weak self] in
+            let namer = SessionNamer(
+                commandScan: { SessionNaming.labelFromCommands(fileAt: $0) },
+                askModel: { SessionNameAsk.askModel(prompt: $0) },
+                excerpt: { SessionNameAsk.excerpt(of: $0) },
+                write: { tty, name in WardenLabelFile.write(name, forTTY: tty) })
+            let outcome = namer.run(candidates)
+            DispatchQueue.main.async {
+                for named in outcome.named {
+                    self?.log("named \(named.sessionID) \"\(named.name)\" (\(named.source))")
+                }
+                self?.log("name tabs: \(outcome.named.count) named, \(outcome.unnamed) left alone, "
+                          + "\(outcome.skipped) already named")
+            }
+        }
     }
 
     @objc private func menuReveal() {

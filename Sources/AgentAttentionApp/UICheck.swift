@@ -125,6 +125,7 @@ enum UICheck {
                                revealDataFolder: #selector(QuitProbe.menuReveal),
                                quit: #selector(QuitProbe.menuQuit),
                                toggleRoam: #selector(QuitProbe.menuToggleRoam),
+                               nameTabs: #selector(QuitProbe.menuNameTabs),
                                placement: NSMenuItem(title: "Bubble position", action: nil, keyEquivalent: "")),
                 roamState: .off, roamIsChanging: false, roamNotice: nil
             )
@@ -245,6 +246,7 @@ enum UICheck {
                            revealDataFolder: #selector(QuitProbe.menuReveal),
                            quit: #selector(QuitProbe.menuQuit),
                            toggleRoam: #selector(QuitProbe.menuToggleRoam),
+                           nameTabs: #selector(QuitProbe.menuNameTabs),
                            placement: NSMenuItem(title: "Bubble position", action: nil, keyEquivalent: "")),
             roamState: .off, roamIsChanging: false,
             roamNotice: (text: "Roam ended: the power helper stopped holding the sleep block.", at: noticeAt)
@@ -2926,6 +2928,7 @@ final class QuitProbe: NSObject {
     private(set) var toggles = 0
     private(set) var reveals = 0
     private(set) var roams = 0
+    private(set) var namings = 0
 
     @objc func menuQuit() { quits += 1 }
     @objc func menuToggleExpansion() { toggles += 1 }
@@ -2933,6 +2936,8 @@ final class QuitProbe: NSObject {
     /// Never wired to a real `RoamService` here — a self-check must never dial the daemon's
     /// socket. This only proves `BubbleMenu.roamItem` wired the selector it was given.
     @objc func menuToggleRoam() { roams += 1 }
+    /// Never wired to the real namer here: a self-check must not spawn a CLI or write a label.
+    @objc func menuNameTabs() { namings += 1 }
 }
 
 /// A player that records instead of sounding. Everything the UI check knows about the chime, it

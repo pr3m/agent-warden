@@ -66,6 +66,8 @@ enum BubbleMenu {
         /// must be the identical selector and not a second one that happens to do the same
         /// thing.
         var toggleRoam: Selector
+        /// Name the tabs still showing a folder name. See `AppDelegate.menuNameTabs`.
+        var nameTabs: Selector
         /// Built by the caller, because it reflects the current configuration.
         var placement: NSMenuItem?
     }
@@ -104,6 +106,11 @@ enum BubbleMenu {
         if let noticeItem = roamNoticeItem(notice: roamNotice) { menu.addItem(noticeItem) }
 
         if let placement = actions.placement { menu.addItem(placement) }
+
+        let name = NSMenuItem(title: "Name unlabelled tabs", action: actions.nameTabs, keyEquivalent: "")
+        name.target = target
+        name.isEnabled = true
+        menu.addItem(name)
 
         let reveal = NSMenuItem(title: "Reveal data folder", action: actions.revealDataFolder, keyEquivalent: "")
         reveal.target = target
