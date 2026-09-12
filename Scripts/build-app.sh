@@ -1,7 +1,7 @@
 #!/bin/bash
-# Build Agent Warden.app plus the aa-emit hook binary, the aa-status query binary and the
-# aa-bridge session bridge. The bridge is bundled, never launched: the app does not host it, and a
-# host only ever runs with directories a person named.
+# Build Agent Warden.app plus the aa-emit hook binary, the aa-status query binary, the aa-bridge
+# session bridge and the aa-mcp adapter. The app keeps one bridge host running while it runs; that
+# host may start or adopt sessions only in the directories the user lists in bridge.json.
 #
 # SwiftPM produces plain executables; this assembles them into a real .app bundle so macOS treats
 # the app as an application (menu bar item, Automation permission prompts, floating panel).
@@ -23,6 +23,7 @@ swift build -c "$CONFIG" --product AgentAttention
 swift build -c "$CONFIG" --product aa-emit
 swift build -c "$CONFIG" --product aa-status
 swift build -c "$CONFIG" --product aa-bridge
+swift build -c "$CONFIG" --product aa-mcp
 swift build -c "$CONFIG" --product aa-session
 swift build -c "$CONFIG" --product aa-powerd
 swift build -c "$CONFIG" --product aa-roam
@@ -35,13 +36,14 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN/AgentAttention" "$APP/Contents/MacOS/AgentWarden"
 cp "$BIN/aa-emit" "$APP/Contents/MacOS/aa-emit"
 cp "$BIN/aa-status" "$APP/Contents/MacOS/aa-status"
-# Bundled so it ships with the app — and **not** started by it. The bridge host runs only when
-# somebody runs it, with the directories they name; nothing here auto-starts a host or approves a
-# directory on the user's behalf.
+# The app runs this as its supervised bridge host. Nothing here approves a directory: the host
+# reads the user's own bridge.json, and with none it can start or adopt nothing.
 cp "$BIN/aa-bridge" "$APP/Contents/MacOS/aa-bridge"
+# Launched by an MCP client, never by the app. It holds no state and speaks only to the host.
+cp "$BIN/aa-mcp" "$APP/Contents/MacOS/aa-mcp"
 cp "$BIN/aa-session" "$APP/Contents/MacOS/aa-session"
-# Bundled so install.sh has a copy to hand to install-powerd.sh — and, like aa-bridge, **not**
-# started by the app itself. This binary only ever runs as root under launchd, placed there by
+# Bundled so install.sh has a copy to hand to install-powerd.sh — and **not** started by the app
+# itself. This binary only ever runs as root under launchd, placed there by
 # the installer, which copies it out of the bundle into a root-owned, non-user-writable home.
 cp "$BIN/aa-powerd" "$APP/Contents/MacOS/aa-powerd"
 cp "$BIN/aa-roam" "$APP/Contents/MacOS/aa-roam"
@@ -83,7 +85,8 @@ echo "Built: $APP"
 echo "  app         : $APP/Contents/MacOS/AgentWarden"
 echo "  hook binary : $APP/Contents/MacOS/aa-emit"
 echo "  status CLI  : $APP/Contents/MacOS/aa-status"
-echo "  bridge CLI  : $APP/Contents/MacOS/aa-bridge  (never auto-started; needs explicit --approve)"
+echo "  bridge CLI  : $APP/Contents/MacOS/aa-bridge  (the app supervises one host; roots from bridge.json)"
+echo "  MCP adapter : $APP/Contents/MacOS/aa-mcp  (stdio; started by an MCP client, see aa-mcp --print-config)"
 echo "  session relay: $APP/Contents/MacOS/aa-session  (runs inside a Ghostty tab; started only by aa-bridge)"
 echo "  power helper : $APP/Contents/MacOS/aa-powerd  (never run from here; install.sh copies it root-owned into /Library)"
 echo "  roam CLI     : $APP/Contents/MacOS/aa-roam  (indicator/status only, reads roam.json; roam itself is toggled from the menu)"

@@ -8,12 +8,13 @@ import AgentAttentionCore
 /// socket and prints the answer as JSON.
 ///
 /// What it can do: start a *new* official Claude Code session in an approved directory, send it a
-/// prompt, send a follow-up to the same session, read what happened, stop a session it started.
+/// prompt, send a follow-up to the same session, read what happened, stop a session it owns; read
+/// what Warden observes of the sessions in your terminals; and adopt one of those — which resumes
+/// its conversation under Warden only after the terminal's own client has gone.
 ///
-/// What it cannot do, and will refuse rather than fake: drive a session somebody already has open
-/// in a terminal. Those are observed by Agent Warden and never driven — a session id this host did
-/// not create is refused, because two things steering one conversation, with only one of them
-/// visible to the person at the keyboard, is not a feature.
+/// What it cannot do, and will refuse rather than fake: write to a session somebody has open in a
+/// terminal. Two things steering one conversation, with only one of them visible to the person at
+/// the keyboard, is not a feature.
 
 let arguments = Array(CommandLine.arguments.dropFirst())
 
@@ -42,13 +43,18 @@ func answer(_ request: BridgeRequest) -> Never {
 }
 
 let paths = AppPaths.resolved()
-let defaultSocket = paths.root.appendingPathComponent("bridge.sock").path
+let defaultSocket = paths.bridgeSocket.path
 
 func value(_ name: String, default fallback: String? = nil) -> String? {
     guard let index = arguments.firstIndex(of: "--\(name)"), index + 1 < arguments.count else {
         return fallback
     }
     return arguments[index + 1]
+}
+
+/// `--authorize "<what the person approved>"`. Typing it is the person's approval, on the record.
+func authorization() -> BridgeAuthorization? {
+    value("authorize").map { BridgeAuthorization(confirmed: true, statement: $0, via: "cli") }
 }
 
 let socketPath = value("socket", default: defaultSocket)!
@@ -62,45 +68,50 @@ guard let command = arguments.first, !command.hasPrefix("-") else {
     print("""
     aa-bridge — Agent Warden's local session bridge
 
-      aa-bridge serve --approve <dir> [--approve <dir>…] [--socket <path>]
-          Run the host. It owns the socket and every session it starts. Sessions may only be
-          started inside an approved directory, and the list is empty unless you pass one.
+      aa-bridge serve [--approve <dir>…] [--roots-file <path>] [--socket <path>]
+          Run the host. It owns the socket and every session it starts or adopts. Sessions may
+          only be started or adopted inside an approved project directory: those passed with
+          --approve, or — without any — the "approvedRoots" in \(paths.bridgeSettingsFile.path),
+          read fresh on every request. No list means none. A root of /, your home directory or
+          anything above it is ignored. The Agent Warden app runs one of these for you.
+          Exits 75 when another host already holds the socket.
 
       aa-bridge start  --cwd <dir> --request-id <id> [--model <name>] [--terminal ghostty]
           The session id is generated here. There is no way to name one, so this cannot be
-          pointed at a session somebody already has open.
+          pointed at a session somebody already has open. With --terminal ghostty it opens in a
+          NEW Ghostty tab you can watch; typing in that tab is not enabled.
 
-          Without --terminal the session runs in the background, exactly as it always has.
-          With --terminal ghostty it opens in a NEW Ghostty tab you can watch: Claude runs in
-          that tab, and the conversation is rendered there as it happens. Existing tabs are
-          never reused or typed into.
+      aa-bridge send   --session <uuid> --message-id <id> --prompt <text> --authorize <statement>
+      aa-bridge stop   --session <uuid> --authorize <statement>
+          Both refuse without --authorize: a sentence saying what the person approved. It is
+          written to \(paths.bridgeAuditLog.lastPathComponent) with the outcome; the prompt is not.
 
-          Typing in that tab is NOT enabled yet — Claude reads its input from Agent Warden, so
-          keystrokes have nowhere to go. Send messages with `aa-bridge send`. The tab says so
-          in its own header.
+      aa-bridge sessions                                  owned and observed sessions, apart
+      aa-bridge status  [--session <uuid>]                one session (owned or observed), or all owned
+      aa-bridge events  --session <uuid> [--after <n>]    an owned session's event stream
+      aa-bridge context --session <uuid> [--max <n>]      bounded recent conversation
+      aa-bridge summary --session <uuid>                  what it is doing, each fact with its source
+      aa-bridge focus   --session <uuid>                  its own tab: one Warden opened, or the tab
+                                                          you linked (done by the app; exact or nothing)
 
-      aa-bridge focus  --session <uuid>
-          Bring a visible session's own tab to the front, by the id Ghostty gave when it was
-          created. No pairing step, and nothing else is touched.
-
-      aa-bridge send   --session <uuid> --message-id <id> --prompt <text>
-      aa-bridge status [--session <uuid>]
-      aa-bridge events --session <uuid> [--after <sequence>]
-      aa-bridge stop   --session <uuid>
-          Answers `stopping` while the client is still up, and `stopped` once its exit has
-          actually been seen. Asking is not the same as it having gone.
+      aa-bridge adopt prepare  --session <uuid> --request-id <id> --authorize <statement>
+                               [--detach terminate]
+      aa-bridge adopt complete --session <uuid> --request-id <id> --authorize <statement>
+                               [--terminal ghostty] [--model <name>]
+      aa-bridge adopt cancel   --session <uuid> --request-id <id> --authorize <statement>
+          Take over a session you started in a terminal. prepare pins the exact conversation and
+          process and says what must happen next — normally: type /exit in that tab. complete
+          resumes the same conversation id under Warden, and only once no other process holds
+          it. --detach terminate asks the original client to exit, once, and only while it is
+          idle; it is never forced.
 
     Every answer is JSON. `--socket` defaults to \(defaultSocket).
-
-    This drives only sessions this host started. A session opened in a terminal is observed by
-    Agent Warden and is never driven from here.
     """)
     exit(0)
 }
 
 switch command {
 case "serve":
-    // Approved directories are explicit. No argument means no session may be started at all.
     var approved: [String] = []
     var index = 0
     while index < arguments.count {
@@ -111,9 +122,17 @@ case "serve":
             index += 1
         }
     }
-    if approved.isEmpty {
-        fail("aa-bridge serve: pass at least one --approve <dir>. Refusing to start a host that "
-             + "would accept any directory.")
+    // Explicit either way: a list on the command line, or the user's own settings file, read on
+    // every request. The file is never written by anything here.
+    let rootsFile = value("roots-file").map { URL(fileURLWithPath: ($0 as NSString).expandingTildeInPath) }
+        ?? paths.bridgeSettingsFile
+    let rootsProvider: (() -> [String])? = approved.isEmpty
+        ? { BridgeSettings.load(from: rootsFile).approvedRoots }
+        : nil
+    let refused = approved.filter { BridgeSettings.acceptableRoots([$0]).isEmpty }
+    if !refused.isEmpty {
+        FileHandle.standardError.write(Data(("aa-bridge serve: ignoring approvals too broad to mean "
+            + "one project: \(refused.joined(separator: ", "))\n").utf8))
     }
     let executable = value("claude") ?? ClaudeStreamLauncher.defaultExecutable
     guard FileManager.default.isExecutableFile(atPath: executable) else {
@@ -123,43 +142,48 @@ case "serve":
     // `--no-tools` is for the disposable proof: the client is started with no tools and no MCP
     // servers, so a benign test cannot touch anything regardless of what the prompt says.
     let withoutTools = arguments.contains("--no-tools")
-    // The visible launcher needs the relay that runs in the tab. It sits beside this binary in the
-    // app bundle; when it is not there, visible sessions are refused rather than silently becoming
-    // background ones.
-    // Found from the **running executable**, not from `argv[0]`. A shell may pass argv[0] as the
-    // bare name it was typed as — `nohup aa-bridge serve …` does exactly that — and a bare name has
-    // no directory to look beside, so the relay was not found and visible sessions were refused
-    // with "this host cannot open visible sessions". A silent downgrade to a feature being missing,
-    // caused by how the command happened to be invoked, is not a thing to leave in.
+    // The relay that runs in a visible tab sits beside this binary in the app bundle. Found from
+    // the **running executable**, not `argv[0]`: a shell may pass the bare name it was typed as,
+    // which has no directory to look beside, and visible sessions were then refused for no reason
+    // anybody could see.
     let ownPath = Bundle.main.executablePath ?? CommandLine.arguments[0]
     let relay = URL(fileURLWithPath: ownPath)
         .resolvingSymlinksInPath().deletingLastPathComponent()
         .appendingPathComponent("aa-session").path
-    let visible: BridgeClientLaunching? = FileManager.default.isExecutableFile(atPath: relay)
+    let relayAvailable = FileManager.default.isExecutableFile(atPath: relay)
+    let visible: BridgeClientLaunching? = relayAvailable
         ? VisibleClaudeLauncher(surfaces: GhosttySurfaceAdapter(), root: paths.root,
                                 claudeExecutable: executable, relayExecutable: relay,
                                 withoutTools: withoutTools)
         : nil
+    let observed = WardenObservedSessions(paths: paths,
+                                          relayExecutable: relayAvailable ? relay : nil,
+                                          appControlSocket: paths.appControlSocket.path)
     let host = BridgeHost(launcher: ClaudeStreamLauncher(executable: executable,
                                                          withoutTools: withoutTools),
                           approvedRoots: approved,
-                          visibleLauncher: visible)
+                          visibleLauncher: visible,
+                          rootsProvider: rootsProvider,
+                          observed: observed,
+                          audit: BridgeAuditLog(url: paths.bridgeAuditLog))
     let server = BridgeSocketServer(path: socketPath, host: host)
     do {
         try server.start()
+    } catch BridgeSocketError.hostAlreadyRunning(let path) {
+        // EX_TEMPFAIL: somebody else's host is live here. Not a crash, and nothing to fight over.
+        fail("aa-bridge serve: a bridge host is already listening on \(path).", code: 75)
     } catch {
         fail("aa-bridge serve: \(error.localizedDescription)")
     }
     FileHandle.standardError.write(Data("""
     aa-bridge host listening on \(socketPath)
-    approved: \(approved.joined(separator: ", "))
+    approved: \(approved.isEmpty ? "from \(rootsFile.path), read per request" : approved.joined(separator: ", "))
     claude:   \(executable)
 
     """.utf8))
 
-    // Stop only what this host started, on the way out. The sources are held for the life of the
-    // process — the previous version let them go immediately, which left SIGTERM ignored with no
-    // handler at all, so the host could not be stopped politely.
+    // Stop only what this host owns, on the way out. The sources are held for the life of the
+    // process — letting them go left SIGTERM ignored with no handler at all.
     var signalSources: [DispatchSourceSignal] = []
     for signalNumber in [SIGINT, SIGTERM] {
         signal(signalNumber, SIG_IGN)
@@ -190,35 +214,56 @@ case "serve":
 case "start":
     guard let cwd = value("cwd") else { fail("aa-bridge start: --cwd is required") }
     guard let requestID = value("request-id") else { fail("aa-bridge start: --request-id is required") }
-    // No caller-supplied session id: the host generates one, so this interface cannot be pointed
-    // at a session somebody already has open.
-    // Absent by default: the background client, unchanged. `--terminal ghostty` is the opt-in.
-    let request = BridgeRequest.start(.init(requestID: requestID, cwd: cwd, model: value("model"),
-                                            terminal: value("terminal")))
-    answer(request)
+    answer(.start(.init(requestID: requestID, cwd: cwd, model: value("model"),
+                        terminal: value("terminal"))))
 
 case "send":
     guard let session = value("session") else { fail("aa-bridge send: --session is required") }
     guard let messageID = value("message-id") else { fail("aa-bridge send: --message-id is required") }
     guard let prompt = value("prompt") else { fail("aa-bridge send: --prompt is required") }
-    answer(.send(.init(sessionID: session, messageID: messageID, prompt: prompt)))
+    answer(.send(.init(sessionID: session, messageID: messageID, prompt: prompt,
+                       authorization: authorization())))
 
 case "status":
     answer(.status(sessionID: value("session")))
+
+case "sessions":
+    answer(.sessions)
 
 case "events":
     guard let session = value("session") else { fail("aa-bridge events: --session is required") }
     answer(.events(sessionID: session, afterSequence: Int(value("after") ?? "0") ?? 0))
 
+case "context":
+    guard let session = value("session") else { fail("aa-bridge context: --session is required") }
+    answer(.context(sessionID: session, maxMessages: value("max").flatMap(Int.init)))
+
+case "summary":
+    guard let session = value("session") else { fail("aa-bridge summary: --session is required") }
+    answer(.summary(sessionID: session))
+
 case "focus":
     guard let session = value("session") else { fail("aa-bridge focus: --session is required") }
     // Handled by the host rather than by this client: only the host knows which terminal it
-    // created, and that identity never leaves it.
+    // created, and only the app can validate a tab the user linked.
     answer(.focus(sessionID: session))
 
 case "stop":
     guard let session = value("session") else { fail("aa-bridge stop: --session is required") }
-    answer(.stop(sessionID: session))
+    answer(.stop(sessionID: session, authorization: authorization()))
+
+case "adopt":
+    guard arguments.count > 1,
+          let action = BridgeRequest.AdoptRequest.Action(rawValue: arguments[1]) else {
+        fail("aa-bridge adopt: say prepare, complete or cancel")
+    }
+    guard let session = value("session") else { fail("aa-bridge adopt: --session is required") }
+    guard let requestID = value("request-id") else { fail("aa-bridge adopt: --request-id is required") }
+    let detach = value("detach").map { BridgeRequest.AdoptRequest.Detach(rawValue: $0) }
+    if let detach, detach == nil { fail("aa-bridge adopt: --detach is user or terminate") }
+    answer(.adopt(.init(requestID: requestID, sessionID: session, action: action,
+                        detach: detach ?? nil, terminal: value("terminal"), model: value("model"),
+                        authorization: authorization())))
 
 default:
     fail("aa-bridge: unknown command \(command)")

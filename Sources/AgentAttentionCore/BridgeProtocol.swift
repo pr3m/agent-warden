@@ -2,11 +2,19 @@ import Foundation
 
 /// The wire format between a bridge client and the Warden-owned bridge host.
 ///
-/// One JSON object per line, in both directions. Deliberately small: a caller can only start a
-/// session Warden owns, send a message to one, ask what has happened, or stop one. There is no verb
-/// for "attach to that terminal over there", because that is not a thing this can honestly do.
+/// One JSON object per line, in both directions. A caller can start a session Warden owns, send a
+/// message to one, ask what has happened, or stop one; read what Warden observes of the sessions in
+/// your terminals; and take one of those over — but only through `adopt`, which never writes to a
+/// conversation while anything else can. There is still no verb for "type into that terminal".
 public enum BridgeProtocol {
-    public static let version = 1
+    public static let version = 2
+    /// Observed sessions returned in one `sessions` answer. The rest are counted.
+    public static let maximumObservedSessions = 60
+    /// Adoptions remembered per host, finished ones included, so a retried request id still means
+    /// what it meant.
+    public static let maximumAdoptions = 32
+    /// The longest authorization statement kept. It is a sentence, not a transcript.
+    public static let maximumAuthorizationLength = 500
     /// A frame larger than this is refused, not truncated: a half-read command is worse than none.
     public static let maximumFrameBytes = 256 * 1024
     /// A prompt longer than this is refused. Bounded because everything here is bounded.
@@ -45,16 +53,25 @@ public enum BridgeProtocol {
 public enum BridgeRequest: Codable, Sendable, Equatable {
     /// Start a new session Warden owns, in an approved directory.
     case start(StartRequest)
-    /// Send a prompt to a session this host started. The first and every later turn use this.
+    /// Send a prompt to a session this host owns. The first and every later turn use this.
     case send(SendRequest)
     /// What is the state of one session, or of all of them?
     case status(sessionID: String?)
     /// Everything recorded after `afterSequence`, with any dropped range reported.
     case events(sessionID: String, afterSequence: Int)
-    /// Stop a session this host started. Never touches anything else.
-    case stop(sessionID: String)
-    /// Bring a visible session's own terminal to the front. Only a surface this host created.
+    /// Stop a session this host owns. Never touches anything else.
+    case stop(sessionID: String, authorization: BridgeAuthorization?)
+    /// Bring a session's own terminal tab to the front: the surface this host created, or the tab
+    /// the user linked to an observed session. Never a tab found by title or directory.
     case focus(sessionID: String)
+    /// Every session Warden can see — the ones this host owns and the ones it only observes.
+    case sessions
+    /// Bounded recent conversation for one session, read on demand and never cached.
+    case context(sessionID: String, maxMessages: Int?)
+    /// What one session is doing, built only from recorded evidence, each fact naming its source.
+    case summary(sessionID: String)
+    /// Take over a session the user started in a terminal, in explicit steps. See `AdoptRequest`.
+    case adopt(AdoptRequest)
 
     public struct StartRequest: Codable, Sendable, Equatable {
         /// Caller-chosen id, so a retry cannot start two sessions. Reusing it with *different*
@@ -101,11 +118,89 @@ public enum BridgeRequest: Codable, Sendable, Equatable {
         /// *different* text is a conflict and is refused.
         public var messageID: String
         public var prompt: String
-        public init(sessionID: String, messageID: String, prompt: String) {
+        /// Required. A prompt is an instruction to an agent that can edit files, so "somebody
+        /// approved this" is a claim the caller has to make on the record, not a default.
+        public var authorization: BridgeAuthorization?
+
+        public init(sessionID: String, messageID: String, prompt: String,
+                    authorization: BridgeAuthorization?) {
             self.sessionID = sessionID
             self.messageID = messageID
             self.prompt = prompt
+            self.authorization = authorization
         }
+    }
+
+    /// Taking over a session the user started in a terminal.
+    ///
+    /// Claude Code has exactly one supported way to continue a conversation programmatically:
+    /// resume it by id in a new client. Two clients writing one conversation interleave into the
+    /// same transcript, so the original has to be **gone** before the new one starts — and nothing
+    /// here can make a person's interactive client go by typing into it. Hence three steps:
+    ///
+    /// - `prepare` pins the exact conversation and process, and says what has to happen next.
+    ///   With `detach: terminate` it also asks that one verified, idle process to exit.
+    /// - `complete` resumes the conversation under Warden, and only once no other process holds it.
+    /// - `cancel` forgets a prepared adoption. The session is left exactly as it was.
+    public struct AdoptRequest: Codable, Sendable, Equatable {
+        public enum Action: String, Codable, Sendable, Equatable {
+            case prepare, complete, cancel
+        }
+        /// Who ends the original client. `user` — the default — means the person exits it
+        /// themselves and nothing here signals anything.
+        public enum Detach: String, Codable, Sendable, Equatable {
+            case user, terminate
+        }
+
+        /// One adoption, from prepare to done. Reusing it for a different session is a conflict.
+        public var requestID: String
+        public var sessionID: String
+        public var action: Action
+        public var detach: Detach?
+        /// Where the resumed client runs, as for `start`. Absent is the background client.
+        public var terminal: String?
+        public var model: String?
+        public var authorization: BridgeAuthorization?
+
+        public init(requestID: String, sessionID: String, action: Action, detach: Detach? = nil,
+                    terminal: String? = nil, model: String? = nil,
+                    authorization: BridgeAuthorization?) {
+            self.requestID = requestID
+            self.sessionID = sessionID
+            self.action = action
+            self.detach = detach
+            self.terminal = terminal
+            self.model = model
+            self.authorization = authorization
+        }
+    }
+}
+
+/// A caller's statement that a person approved this exact action.
+///
+/// The host cannot see the person, so it cannot verify this. What it can do is refuse to act
+/// without one, keep it bounded and printable, and write it to the audit log next to what was done
+/// — so "who said to do that" always has an answer on disk.
+public struct BridgeAuthorization: Codable, Sendable, Equatable {
+    public var confirmed: Bool
+    /// What was approved, in the approver's words where possible.
+    public var statement: String
+    /// Which interface carried it: `cli`, `mcp`, … Free text, bounded.
+    public var via: String?
+
+    public init(confirmed: Bool, statement: String, via: String? = nil) {
+        self.confirmed = confirmed
+        self.statement = statement
+        self.via = via
+    }
+
+    /// Present, affirmative, and saying something.
+    public var isUsable: Bool {
+        let trimmed = statement.trimmingCharacters(in: .whitespacesAndNewlines)
+        return confirmed && !trimmed.isEmpty
+            && statement.count <= BridgeProtocol.maximumAuthorizationLength
+            && statement.unicodeScalars.allSatisfy { $0.value >= 0x20 && $0.value != 0x7F }
+            && (via ?? "").count <= BridgeProtocol.maximumIdentifierLength
     }
 }
 
@@ -122,11 +217,26 @@ public struct BridgeResponse: Codable, Sendable, Equatable {
     /// More events exist after the ones returned. Ask again from `nextAfter`.
     public var moreAvailable: Bool?
     public var nextAfter: Int?
+    /// Sessions Warden observes in terminals — the same rows `aa-status --json` reports.
+    public var observed: [StatusReport.SessionSummary]?
+    /// Observed sessions left out to keep the answer inside one frame.
+    public var observedOmitted: Int?
+    /// Whether the observed picture can be trusted right now, and why not when it cannot.
+    public var observedTrustworthy: Bool?
+    public var observedWarnings: [String]?
+    public var adoption: BridgeAdoptionState?
+    public var adoptions: [BridgeAdoptionState]?
+    public var context: SessionContextAnswer?
+    public var summary: BridgeGroundedSummary?
     public var version: Int
 
     public init(ok: Bool, error: BridgeError? = nil, session: BridgeSessionState? = nil,
                 sessions: [BridgeSessionState]? = nil, events: [BridgeEvent]? = nil,
                 droppedBefore: Int? = nil, moreAvailable: Bool? = nil, nextAfter: Int? = nil,
+                observed: [StatusReport.SessionSummary]? = nil, observedOmitted: Int? = nil,
+                observedTrustworthy: Bool? = nil, observedWarnings: [String]? = nil,
+                adoption: BridgeAdoptionState? = nil, adoptions: [BridgeAdoptionState]? = nil,
+                context: SessionContextAnswer? = nil, summary: BridgeGroundedSummary? = nil,
                 version: Int = BridgeProtocol.version) {
         self.ok = ok
         self.error = error
@@ -136,7 +246,107 @@ public struct BridgeResponse: Codable, Sendable, Equatable {
         self.droppedBefore = droppedBefore
         self.moreAvailable = moreAvailable
         self.nextAfter = nextAfter
+        self.observed = observed
+        self.observedOmitted = observedOmitted
+        self.observedTrustworthy = observedTrustworthy
+        self.observedWarnings = observedWarnings
+        self.adoption = adoption
+        self.adoptions = adoptions
+        self.context = context
+        self.summary = summary
         self.version = version
+    }
+}
+
+/// Where one adoption has got to.
+public struct BridgeAdoptionState: Codable, Sendable, Equatable {
+    public enum Phase: String, Codable, Sendable, Equatable {
+        /// Pinned. The original client is still running, and the user has to exit it — or ask for
+        /// `detach: terminate`. Nothing has been signalled and nothing has been written.
+        case awaitingDetach
+        /// One verified process was asked to exit. Asking is not the same as it having gone.
+        case detaching
+        /// Nothing holds the conversation any more. `complete` may resume it.
+        case ready
+        /// Resumed under Warden. The session is now owned, under the same conversation id.
+        case adopted
+        case cancelled
+    }
+
+    public var requestID: String
+    public var sessionID: String
+    public var phase: Phase
+    public var detach: String
+    public var cwd: String
+    /// The interactive client this adoption was pinned to, by pid and start time.
+    public var originalPID: Int32?
+    public var originalStartedAt: Double?
+    public var tty: String?
+    /// `alive`, `gone` or `unknown`, as of `checkedAt`.
+    public var originalProcess: String
+    public var checkedAt: Date
+    public var createdAt: Date
+    /// One plain sentence: what has to happen next, and who does it.
+    public var nextStep: String
+    /// Why the next step cannot happen yet. Empty when nothing is in the way.
+    public var blockers: [String]
+
+    public init(requestID: String, sessionID: String, phase: Phase, detach: String, cwd: String,
+                originalPID: Int32?, originalStartedAt: Double?, tty: String?,
+                originalProcess: String, checkedAt: Date, createdAt: Date, nextStep: String,
+                blockers: [String] = []) {
+        self.requestID = requestID
+        self.sessionID = sessionID
+        self.phase = phase
+        self.detach = detach
+        self.cwd = cwd
+        self.originalPID = originalPID
+        self.originalStartedAt = originalStartedAt
+        self.tty = tty
+        self.originalProcess = originalProcess
+        self.checkedAt = checkedAt
+        self.createdAt = createdAt
+        self.nextStep = nextStep
+        self.blockers = blockers
+    }
+}
+
+/// What one session is doing, said only as far as the evidence goes.
+///
+/// Every fact names where it came from — the queue the app maintains, the transcript, or this
+/// host's own record of an owned session — and when that source was read. Nothing is inferred from
+/// silence and nothing is paraphrased by a model: a caller that wants prose builds it from these,
+/// and can always say which part came from where.
+public struct BridgeGroundedSummary: Codable, Sendable, Equatable {
+    public struct Fact: Codable, Sendable, Equatable {
+        public var statement: String
+        /// `queue`, `transcript`, `bridge` or `process`.
+        public var source: String
+        public var observedAt: Date?
+
+        public init(statement: String, source: String, observedAt: Date? = nil) {
+            self.statement = statement
+            self.source = source
+            self.observedAt = observedAt
+        }
+    }
+
+    public var sessionID: String
+    public var displayName: String?
+    /// One sentence, assembled from the facts below and nothing else.
+    public var headline: String
+    public var facts: [Fact]
+    public var caveats: [String]
+    public var generatedAt: Date
+
+    public init(sessionID: String, displayName: String?, headline: String, facts: [Fact],
+                caveats: [String], generatedAt: Date) {
+        self.sessionID = sessionID
+        self.displayName = displayName
+        self.headline = headline
+        self.facts = facts
+        self.caveats = caveats
+        self.generatedAt = generatedAt
     }
 }
 
@@ -163,6 +373,12 @@ public struct BridgeError: Codable, Sendable, Equatable, Error {
         /// Claude Code refused a permission and the host has no way to answer it.
         case permissionUnsupported
         case unknownRequest
+        /// Send, stop and adopt need a caller's statement that a person approved them.
+        case authorizationRequired
+        /// That session cannot be taken over, and the message says which rule stops it.
+        case notAdoptable
+        /// Something other than this host holds that conversation. Nothing was written.
+        case writerConflict
     }
 
     public init(code: Code, message: String) {
@@ -241,6 +457,9 @@ public struct BridgeSessionState: Codable, Sendable, Equatable {
     /// Messages this session holds that did not fit in this answer. Present rather than implied, so
     /// a caller is never handed a short list that looks complete.
     public var messagesOmitted: Int?
+    /// The adoption request this session came from, when it was a terminal session resumed under
+    /// Warden rather than one this host started fresh.
+    public var adoptedFrom: String?
 
     public init(sessionID: String, clientReportedSessionID: String? = nil, cwd: String,
                 phase: BridgeSessionPhase, pid: Int32? = nil, startedAt: Date,

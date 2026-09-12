@@ -100,6 +100,22 @@ public final class VisibleClaudeLauncher: BridgeClientLaunching {
     public func launch(sessionID: String, cwd: String, model: String?,
                        onLine: @escaping (String) -> Void,
                        onExit: @escaping (Int32) -> Void) throws -> BridgeClientHandle {
+        try open(sessionID: sessionID, cwd: cwd, model: model, resume: false,
+                 onLine: onLine, onExit: onExit)
+    }
+
+    /// An adopted conversation, continued in a new tab of its own. The tab it came from is not
+    /// reused: it belonged to the client the user exited.
+    public func resume(sessionID: String, cwd: String, model: String?,
+                       onLine: @escaping (String) -> Void,
+                       onExit: @escaping (Int32) -> Void) throws -> BridgeClientHandle {
+        try open(sessionID: sessionID, cwd: cwd, model: model, resume: true,
+                 onLine: onLine, onExit: onExit)
+    }
+
+    private func open(sessionID: String, cwd: String, model: String?, resume: Bool,
+                      onLine: @escaping (String) -> Void,
+                      onExit: @escaping (Int32) -> Void) throws -> BridgeClientHandle {
         // Both executables are checked to **exist** here, not merely to be well-shaped paths. A
         // command that cannot run still opens a terminal: Ghostty creates the surface, the command
         // fails instantly, the relay never opens its end of the pipe — and the reader below would
@@ -124,7 +140,7 @@ public final class VisibleClaudeLauncher: BridgeClientLaunching {
                                             claudeExecutable: claudeExecutable,
                                             relayExecutable: relayExecutable,
                                             inbox: inbox, outbox: outbox,
-                                            withoutTools: withoutTools) else {
+                                            withoutTools: withoutTools, resume: resume) else {
             throw VisibleSessionError.refusedPlan(
                 "the working directory, model or executable path is not a plain path this host "
                 + "will put in a terminal command")

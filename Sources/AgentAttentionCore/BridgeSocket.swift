@@ -20,7 +20,7 @@ import Foundation
 ///   honest cursor rather than truncated.
 public final class BridgeSocketServer: @unchecked Sendable {
     public let path: String
-    private let host: BridgeHost
+    private let handler: (BridgeRequest) -> BridgeResponse
     /// One queue that does nothing but accept, and a pool that does nothing but serve.
     private let acceptQueue = DispatchQueue(label: "ai.wundamental.agent-warden.bridge.accept")
     private let workQueue = DispatchQueue(label: "ai.wundamental.agent-warden.bridge.work",
@@ -34,10 +34,17 @@ public final class BridgeSocketServer: @unchecked Sendable {
     private var boundInode: (device: dev_t, inode: ino_t)?
     private var running = false
 
-    public init(path: String, host: BridgeHost,
-                maximumConnections: Int = 8, ioDeadline: TimeInterval = 10) {
+    public convenience init(path: String, host: BridgeHost,
+                            maximumConnections: Int = 8, ioDeadline: TimeInterval = 10) {
+        self.init(path: path, maximumConnections: maximumConnections, ioDeadline: ioDeadline,
+                  handler: host.handle)
+    }
+
+    /// Any answerer, on the same private endpoint rules. The app serves its focus requests this way.
+    public init(path: String, maximumConnections: Int = 8, ioDeadline: TimeInterval = 10,
+                handler: @escaping (BridgeRequest) -> BridgeResponse) {
         self.path = path
-        self.host = host
+        self.handler = handler
         self.workers = DispatchSemaphore(value: max(1, maximumConnections))
         self.ioDeadline = ioDeadline
     }
@@ -109,7 +116,7 @@ public final class BridgeSocketServer: @unchecked Sendable {
         // socket we do not understand is not ours to delete.
         switch BridgeSocketServer.probe(path) {
         case .live:
-            throw BridgeSocketError.pathOccupied("A bridge host is already listening on \(path).")
+            throw BridgeSocketError.hostAlreadyRunning(path)
         case .unknown(let code):
             throw BridgeSocketError.pathOccupied(
                 "\(path) exists and could not be checked (errno \(code)). Refusing to replace it.")
@@ -285,7 +292,7 @@ public final class BridgeSocketServer: @unchecked Sendable {
                                   error: BridgeError(code: .malformed,
                                                      message: "That frame is not a bridge request."))
         }
-        return host.handle(request)
+        return handler(request)
     }
 
     @discardableResult
@@ -331,6 +338,9 @@ public enum BridgeSocketError: Error, LocalizedError {
     case cannotListen(Int32)
     case pathTooLong
     case pathOccupied(String)
+    /// Another host is live on this path. Not a failure of this one, and not something to retry
+    /// in a tight loop — a supervisor waits for it to go.
+    case hostAlreadyRunning(String)
     case noAnswer
 
     public var errorDescription: String? {
@@ -340,6 +350,7 @@ public enum BridgeSocketError: Error, LocalizedError {
         case .cannotListen(let code): return "could not listen on the socket (errno \(code))"
         case .pathTooLong: return "the socket path is too long for a Unix socket"
         case .pathOccupied(let why): return why
+        case .hostAlreadyRunning(let path): return "A bridge host is already listening on \(path)."
         case .noAnswer: return "the bridge host did not answer"
         }
     }

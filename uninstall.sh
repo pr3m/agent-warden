@@ -154,7 +154,7 @@ removed=0
 # Must list exactly what install.sh's LINK_NAMES creates. `aa-roam` was added there and not here,
 # so an uninstall left a dangling symlink into a bundle it had just stopped maintaining — and the
 # next install "refused" nothing and silently relinked it, which is why nobody noticed.
-for name in aa-status aa-emit aa-bridge aa-session aa-roam; do
+for name in aa-status aa-emit aa-bridge aa-session aa-roam aa-mcp; do
   target="$LINK_DIR/$name"
   [ -L "$target" ] || continue
   existing="$(readlink "$target" || true)"

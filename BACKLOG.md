@@ -80,9 +80,9 @@ for replies/continuations; reliable routing and acknowledgement; observable resu
 failure reporting. Do not use synthetic keystrokes or terminal scripting to inject input. Live
 voice delivery/wakeups require their own supported connection and must be verified separately.
 
-None of this is implemented today. Warden watches, reports and provides user-confirmed navigation;
-`aa-status` remains read-only. The disposable-session test through Warden is blocked by missing
-capability, not a missing test session.
+**Delivered:** the bridge starts, sends to, stops and adopts sessions with acknowledgement,
+authorization and an audit log, and `aa-mcp` exposes it to a local MCP client (README § The session
+bridge). Still open: live voice delivery and wakeups, and the accessible per-row controls above.
 
 ## Session discovery — what it does not do
 
@@ -109,7 +109,7 @@ discovery degrades to nothing and hook-driven monitoring is unaffected.
 |---|---|
 | **Automatic session→tab mapping in Ghostty** — **DONE (0.14)** | Delivered, and not by the route this entry expected. The premise here was that Ghostty exposes a terminal's id, name and working directory but not its pid or tty, so a session cannot learn which surface it occupies — true, and it makes *matching* on a name or a directory a guess that picks the wrong tab whenever two sessions share a project. It does not make the question unanswerable. Warden writes a one-time token as the title of the tty the session is actually running on, then asks Ghostty which terminal is now called that. Only one can answer, and the title is put straight back. That is a challenge-response, not a derivation, so it tells four tabs in one repository apart. Recorded with `provenance: derivedHandshake`, distinct from `userConfirmed`. Ghostty is not upgraded, restarted or controlled, nothing is typed into a session, and a session that does not answer — tmux, another terminal, none at all — stays unlinked rather than being matched to the closest-looking tab. Upstream PR 11922 is no longer a blocker for this. |
 | **Automatic avoidance of other apps' floating controls** | Would need window-list geometry this app does not ask for, and could not be promised across every app and space. Instead: a default that clears the corner, drag, and a corner/nudge menu. |
-| **MCP server** | `aa-status --json` already answers the question, read-only, in one process spawn, from anywhere. No server is implemented. Revisit the appropriate supported interface for event subscriptions or the assistant-operable session lifecycle item above; ordinary status queries remain available without it. |
+| **MCP server** — **DONE** | `aa-mcp` serves the bridge's operations over stdio, stateless, one host request per tool. Not built: event *subscriptions* — a client polls `warden_session_events` with a cursor. `aa-status --json` remains the cheapest read for status alone. |
 | **Multi-client event collection** (Codex, Cursor, other agents) | The event schema is client-neutral and versioned, and the emitter takes its classification as an argument, so a second client needs an emitter invocation and nothing else. Not built: only Claude Code hooks are wired. |
 | **Transcript *ingestion*** | Reading a conversation on request is built (`--session … --context`). *Ingesting* one is not, and will not be: nothing reads content on a timer, into the queue, into `state.json` or into a log. Content is produced for one explicit query and returned to that caller. Would mean storing session content. A deliberate non-goal — see the tests that fail if prompt or assistant text reaches disk. The most a card carries is the hook's own one-line message, and only if `includeHookMessages` is on. |
 | **Code signing, notarisation, distribution** | Ad-hoc signed so macOS keeps a stable identity for Automation grants. Developer ID, notarisation and a release channel are out of scope. |
@@ -139,6 +139,44 @@ a real disposable session.
 ## Known rough edges
 
 - **`AttentionEngine` is main-thread only** by convention, not enforcement.
+- **The MCP read path is deliberately unscoped.** `approvedRoots` governs what the bridge may
+  *touch*, not what it may *see*: `context` and `summary` return any live session's recent prose,
+  including projects never listed in `bridge.json`. Chosen knowingly — any process running as this
+  user can already read `~/.claude/projects` directly, so the exposure is to a narrow-tool-list MCP
+  client rather than to a local attacker. Both calls are now recorded in the audit log (operation
+  and session only, never the content), so an enumeration no longer looks identical to doing
+  nothing. Revisit by adding `isApproved(cwd)` to both, or a separate `readableRoots`.
+- **`authorization` is the caller's word, and the voice agent auto-approves.** The two combine into
+  a confused-deputy path with no technical barrier: session A summarises attacker-influenced text,
+  the agent reads it through `warden_session_context`, then calls `warden_send_prompt` on session B
+  asserting its own approval. Narrowed by `SessionContext` dropping `tool_result` payloads, so raw
+  fetched content never comes back — only the assistant's own words about it. The only control that
+  would bind is out-of-band confirmation — a destructive `via == mcp` request requiring a click in
+  the menu-bar app. **Deliberately not built, and this is settled rather than pending.** Handing an
+  agent the ability to drive Claude Code sessions at all is granting it the machine; a click in
+  front of one tool it holds, while it holds others, buys nothing but friction. The perimeter is
+  wherever that agent gets its authority, which is not this repository. The residual this does not
+  cover is a trusted agent being *misled* by content it read, and that only lands here if warden
+  ever becomes its only powerful tool — if that day comes, `BridgeService` already holds the
+  control socket and `focusForBridge` shows the pattern. The audit log earns its keep either way:
+  not as a barrier, but as the way to reconstruct what happened.
+- **`warden_start_session` is annotated destructive but takes no `authorization`.** Nothing about
+  spawning a client in an approved root is the user's word to give, so there is no statement to
+  record — but it means the audit log has no vouching line for starts, unlike send/adopt/stop.
+- **The supervisor's launch-window fix has no unit test.** `stop()` now waits on a `launching` flag
+  so it cannot report a clean shutdown while a child is mid-spawn. A deterministic test needs a
+  barrier injected into the launcher; a timing-based one would add flake to the suites immediately
+  below, which are already unreliable. Covered indirectly by `Scripts/smoke-test.sh` asserting that
+  no client the host started outlives it.
+- **A duplicate concurrent adopt/terminate can answer with a stale phase.** The loser of the
+  `claimExit` race reports `awaitingDetach` though a signal was just sent. The signal is still sent
+  exactly once and the persisted ticket self-corrects; only that one response is briefly wrong.
+- **The bridge lifecycle suites are not reliably green.** `Bridge third-round corrections` and its
+  neighbours failed twice in seven consecutive runs of `Scripts/test.sh`, with a different issue
+  count each time (14, then 13), then passed five times in a row with no change in between. They
+  turn on pipe teardown, descriptor lifetime and bounded waits, so a slow or loaded machine changes
+  the answer. Treat a single green run of those suites as weak evidence, and do not read a failure
+  there as a regression until it repeats.
 - **One `--uicheck --png` assertion has been red since before the zone work.** The screenshot
   fixture links its first session to a tab whose name differs from the worktree, so the row
   correctly shows the tab name — while the check still asserts the worktree name is on screen.
@@ -196,3 +234,20 @@ a real disposable session.
   are back at the machine. The settings are therefore inert, and read as a feature that exists.
   Either build the nudge or drop the two keys — a default of `true` for something that never
   happens is the worse of the two states.
+- **Adoption ends the terminal's client; it cannot detach it.** Claude Code has no supported way to
+  hand an interactive client's conversation to another process while it runs, so the handoff is
+  "exit, then resume": by you, or by one SIGTERM while idle. The original tab is not reused.
+- **Authorization is the caller's word.** The host cannot see a person; it refuses a change without
+  a confirmed statement and records the statement. An MCP client that fabricates one is caught only
+  by its own approval prompt (the tools are marked destructive) and by the audit log afterwards.
+- **The writer check is only as good as Claude Code's registry.** It runs before every send to an
+  adopted session, so a second client that starts in the milliseconds between check and write is
+  missed for that one write, and a client that never registers is never seen.
+- **A crashed host takes its sessions' clients with it.** The app restarts the host, which starts
+  empty; the conversations are on disk and can be adopted again once Warden observes them.
+- **A host orphaned by an app crash keeps the socket.** The relaunched app treats it as another
+  host and waits for it to go rather than replacing it.
+- **Exact-tab focus of an observed session needs the app.** The host asks the app, which owns the
+  links; with the app not running the answer is "unavailable", never a guessed tab.
+- **`aa-mcp` is bundled but not linked or version-checked by the installer.** Point an MCP client
+  at the bundle path. Adding it to `install-app.py` touches a file on the heavy list.

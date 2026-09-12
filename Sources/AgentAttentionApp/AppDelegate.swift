@@ -21,6 +21,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let discovery = DiscoveryService()
     private let branches = BranchService()
     private let contextWindow = SessionContextWindow()
+    /// The bridge host this app keeps running, and the focus endpoint it answers. See
+    /// `BridgeService`.
+    private let bridge: BridgeService
     private let pairings: PairingStore
     /// Asks one unlinked session's terminal to identify itself, off the main thread. See
     /// `TabAutoLinker` for why it is one at a time and why it stops asking.
@@ -85,6 +88,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         autoLinker = TabAutoLinker(ghostty: GhosttyAdapter(), pairings: pairings)
         tabTitles = TabTitleService(ghostty: GhosttyAdapter(), pairings: pairings)
         roam = RoamService(paths: paths)
+        bridge = BridgeService(paths: paths)
         config = AttentionConfig.load(from: paths.configFile)
         bubble = BubbleController(size: CGFloat(config.bubbleSize))
         engine = AttentionEngine(
@@ -182,6 +186,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         timer?.tolerance = 2
 
+        bridge.log = { [weak self] message in self?.log(message) }
+        bridge.focusLinkedTab = { [weak self] sessionID, reply in
+            guard let self else { return }
+            self.focusForBridge(sessionID, reply: reply)
+        }
+        bridge.start()
+
         let center = NSWorkspace.shared.notificationCenter
         center.addObserver(self, selector: #selector(willSleep), name: NSWorkspace.willSleepNotification, object: nil)
         center.addObserver(self, selector: #selector(didWake), name: NSWorkspace.didWakeNotification, object: nil)
@@ -204,6 +215,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Roam does not outlive the app that is holding it: the assertion and the activity token
         // are given back here, and the daemon drops the lease as this process's socket closes.
         roam.shutdown()
+        // The host and every session it owns go with the app, and the wait for that is bounded.
+        bridge.stop()
         spoolWatcher?.stop()
         sessionWatcher?.stop()
         outsideClicks.stop()
@@ -696,6 +709,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             self.render()
             self.persist()
+        }
+    }
+
+    /// A bridge caller asking for a session's tab. Exact tab or nothing: bringing Ghostty forward
+    /// without the right tab is not what was asked for, so it is reported as a failure — and, unlike
+    /// a click, it touches neither the queue nor the pasteboard.
+    private func focusForBridge(_ sessionID: String, reply: @escaping (BridgeResponse) -> Void) {
+        guard let identity = engine.session(sessionID)?.identity else {
+            reply(BridgeResponse(ok: false, error: BridgeError(
+                code: .notOwned, message: "Agent Warden is not tracking session \(sessionID).")))
+            return
+        }
+        guard let pairing = pairings.pairing(for: sessionID) else {
+            reply(BridgeResponse(ok: false, error: BridgeError(
+                code: .malformed, message: "No Ghostty tab is linked to \(identity.projectName). "
+                    + "Link it from the panel's ⋯ menu first; nothing was focused.")))
+            return
+        }
+        TerminalActivator.activate(identity, pairing: pairing) { [weak self] outcome in
+            self?.log("focus from the bridge \(identity.projectName): \(outcome.level.rawValue) — \(outcome.message)")
+            switch outcome.level {
+            case .exactTab:
+                reply(BridgeResponse(ok: true))
+            case .appOnly, .failed:
+                reply(BridgeResponse(ok: false, error: BridgeError(code: .clientUnavailable,
+                                                                   message: outcome.message)))
+            }
         }
     }
 

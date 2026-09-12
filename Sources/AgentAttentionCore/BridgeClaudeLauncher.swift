@@ -50,7 +50,12 @@ public struct ClaudeStreamLauncher: BridgeClientLaunching {
     /// alongside it: nobody is at a keyboard here, so a prompt this bridge cannot answer must make
     /// the client refuse rather than hang. `--dangerously-skip-permissions` and `bypassPermissions`
     /// appear nowhere and are not reachable from the protocol.
-    public static func arguments(sessionID: String, model: String?, withoutTools: Bool) -> [String] {
+    ///
+    /// `resume` continues an existing conversation: `--resume <id>` in place of `--session-id`, and
+    /// never `--fork-session`, which would quietly move the conversation to a new id and leave the
+    /// adopted one behind.
+    public static func arguments(sessionID: String, model: String?, withoutTools: Bool,
+                                 resume: Bool = false) -> [String] {
         var arguments = [
             "--print",
             // Required: `--print` with stream-json output emits nothing useful without it.
@@ -60,7 +65,7 @@ public struct ClaudeStreamLauncher: BridgeClientLaunching {
             "--replay-user-messages",
             "--permission-mode", "auto",
             "--permission-prompts", "none",
-            "--session-id", sessionID,
+            resume ? "--resume" : "--session-id", sessionID,
         ]
         if let model, !model.isEmpty { arguments += ["--model", model] }
         if withoutTools {
@@ -70,18 +75,54 @@ public struct ClaudeStreamLauncher: BridgeClientLaunching {
         return arguments
     }
 
+    /// Markers a Claude Code session puts in the environment of everything it runs.
+    ///
+    /// A client that inherits them believes it is a child of that session: observed live, it
+    /// announced "Transcript saving is off — inherited CLAUDE_CODE_CHILD_SESSION marker" and never
+    /// appeared in the session registry. A host started from inside a session — or an app restarted
+    /// by an agent — would then run every client it owns that way, and an adopted conversation
+    /// would silently stop being saved. These are removed; the user's own `CLAUDE_CODE_*`
+    /// settings are not.
+    public static let inheritedSessionMarkers: Set<String> = [
+        "CLAUDECODE", "CLAUDE_PID", "CLAUDE_CODE_CHILD_SESSION", "CLAUDE_CODE_SESSION_ID",
+        "CLAUDE_CODE_ENTRYPOINT", "CLAUDE_CODE_EXECPATH", "CLAUDE_CODE_BRIDGE_SESSION_ID",
+        "CLAUDE_CODE_MESSAGING_SOCKET", "CLAUDE_CODE_MESSAGING_TOKEN",
+    ]
+
+    /// The environment a client this host starts should see: this one, minus the markers above.
+    public static func independentEnvironment(_ environment: [String: String]) -> [String: String] {
+        environment.filter { !inheritedSessionMarkers.contains($0.key) }
+    }
+
     public func launch(sessionID: String,
                        cwd: String,
                        model: String?,
                        onLine: @escaping (String) -> Void,
                        onExit: @escaping (Int32) -> Void) throws -> BridgeClientHandle {
+        try run(sessionID: sessionID, cwd: cwd, model: model, resume: false,
+                onLine: onLine, onExit: onExit)
+    }
+
+    public func resume(sessionID: String,
+                       cwd: String,
+                       model: String?,
+                       onLine: @escaping (String) -> Void,
+                       onExit: @escaping (Int32) -> Void) throws -> BridgeClientHandle {
+        try run(sessionID: sessionID, cwd: cwd, model: model, resume: true,
+                onLine: onLine, onExit: onExit)
+    }
+
+    private func run(sessionID: String, cwd: String, model: String?, resume: Bool,
+                     onLine: @escaping (String) -> Void,
+                     onExit: @escaping (Int32) -> Void) throws -> BridgeClientHandle {
         let arguments = ClaudeStreamLauncher.arguments(sessionID: sessionID, model: model,
-                                                       withoutTools: withoutTools)
+                                                       withoutTools: withoutTools, resume: resume)
 
         let process = Process()
         process.executableURL = URL(fileURLWithPath: executable)
         process.arguments = arguments
         process.currentDirectoryURL = URL(fileURLWithPath: cwd)
+        process.environment = ClaudeStreamLauncher.independentEnvironment(ProcessInfo.processInfo.environment)
 
         let input = Pipe()
         let output = Pipe()

@@ -165,9 +165,12 @@ public struct VisibleSessionPlan: Sendable, Equatable {
     public let inbox: String
     public let outbox: String
     public let withoutTools: Bool
+    /// Continue the conversation named by `sessionID` rather than start one under it.
+    public let resume: Bool
 
     public init?(sessionID: String, cwd: String, model: String?, claudeExecutable: String,
-                 relayExecutable: String, inbox: String, outbox: String, withoutTools: Bool) {
+                 relayExecutable: String, inbox: String, outbox: String, withoutTools: Bool,
+                 resume: Bool = false) {
         guard VisibleSessionPlan.isPlainIdentifier(sessionID) else { return nil }
         // A model name is optional; a *malformed* one is refused rather than dropped, so a caller
         // never gets a session quietly running on something other than what it asked for.
@@ -184,6 +187,7 @@ public struct VisibleSessionPlan: Sendable, Equatable {
         self.inbox = inbox
         self.outbox = outbox
         self.withoutTools = withoutTools
+        self.resume = resume
     }
 
     /// The command Ghostty runs in the new surface. Our own relay, never `claude` directly, so the
@@ -197,6 +201,7 @@ public struct VisibleSessionPlan: Sendable, Equatable {
                      "--outbox", outbox]
         if let model { parts += ["--model", model] }
         if withoutTools { parts.append("--no-tools") }
+        if resume { parts.append("--resume") }
         return parts.joined(separator: " ")
     }
 

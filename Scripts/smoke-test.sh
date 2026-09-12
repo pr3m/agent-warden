@@ -911,6 +911,154 @@ contains "the raw frames go back to Warden verbatim" '"type":"assistant"' "$(cat
 check "every frame the client produced reached Warden" "3" "$(wc -l < "$RELAY_DIR/frames.log" | tr -d ' ')"
 
 echo
+echo "== 18. The bridge reads, refuses without approval, adopts a terminal session, and speaks MCP =="
+# Real aa-bridge and aa-mcp against a stub Claude that records how it was started, and two fixture
+# "terminal sessions" this test owns. Nothing here reaches a real Claude, a real session or the real
+# socket: the home, the Claude home and the socket are all inside $WORK.
+set +e
+BRIDGE="$BIN/aa-bridge"
+MCP="$BIN/aa-mcp"
+BR="$WORK/br"
+BR_CLAUDE_HOME="$BR/claude-home"
+mkdir -p "$BR/project" "$BR_CLAUDE_HOME/sessions" "$BR_CLAUDE_HOME/projects/-br-project"
+PROJECT="$(cd "$BR/project" && pwd -P)"
+BR_SOCK="$AGENT_ATTENTION_HOME/bridge.sock"
+printf '{"approvedRoots":["%s"]}\n' "$PROJECT" > "$AGENT_ATTENTION_HOME/bridge.json"
+
+cat > "$BR/stub-claude" <<'STUB'
+#!/usr/bin/python3
+# Records its own command line, then behaves like a stream-json client: replays each user frame and
+# answers it with a result naming that frame's uuid.
+import json, os, sys, uuid
+args = sys.argv[1:]
+open(os.environ["STUB_ARGS"], "a").write(" ".join(args) + "\n")
+sid = args[args.index("--resume") + 1] if "--resume" in args else args[args.index("--session-id") + 1]
+print(json.dumps({"type": "system", "subtype": "init", "session_id": sid}), flush=True)
+for line in sys.stdin:
+    frame = json.loads(line)
+    print(line.strip(), flush=True)
+    print(json.dumps({"type": "result", "subtype": "success", "uuid": str(uuid.uuid4()),
+                      "session_id": sid, "is_error": False, "result": "stub reply",
+                      "user_message_uuid": frame.get("uuid")}), flush=True)
+STUB
+chmod +x "$BR/stub-claude"
+
+ADOPT_A="aaaa0000-1111-4222-8333-444444444444"
+ADOPT_B="bbbb0000-1111-4222-8333-444444444444"
+for id in "$ADOPT_A" "$ADOPT_B"; do
+  printf '%s\n' '{"type":"user","sessionId":"'"$id"'","message":{"role":"user","content":"hello"}}' \
+    > "$BR_CLAUDE_HOME/projects/-br-project/$id.jsonl"
+done
+
+# One fixture process per terminal session. Double-forked so it is not this shell's child: a signal
+# that ends it leaves no zombie behind to look alive, just as a real shell reaps its own Claude.
+BR_FIXTURE="$WORK/br-claude-bin/claude"
+start_terminal_session() { # start_terminal_session <session id> <pid file>
+  cat > "$BR/emit-$1.sh" <<EOF
+#!/bin/sh
+printf '%s' '{"hook_event_name":"SessionStart","session_id":"$1","cwd":"$PROJECT","source":"startup"}' | "$EMIT" --signal sessionStart
+EOF
+  chmod +x "$BR/emit-$1.sh"
+  ( "$BR_FIXTURE" 300 /bin/sh "$BR/emit-$1.sh" & echo $! > "$2" )
+  for _ in $(seq 1 100); do
+    [ -f "$AGENT_ATTENTION_HOME/sessions/$1.json" ] && break
+    /bin/sleep 0.1
+  done
+}
+if compile_claude_fixture "$BR_FIXTURE" "18"; then
+  start_terminal_session "$ADOPT_A" "$BR/pid-a"
+  start_terminal_session "$ADOPT_B" "$BR/pid-b"
+fi
+PID_A="$(cat "$BR/pid-a" 2>/dev/null)"
+PID_B="$(cat "$BR/pid-b" 2>/dev/null)"
+"$APP" --selftest >/dev/null
+
+AGENT_WARDEN_CLAUDE_HOME="$BR_CLAUDE_HOME" STUB_ARGS="$BR/args.log" \
+  "$BRIDGE" serve --socket "$BR_SOCK" --claude "$BR/stub-claude" 2>"$BR/host.log" &
+BR_HOST=$!
+for _ in $(seq 1 100); do [ -S "$BR_SOCK" ] && break; /bin/sleep 0.1; done
+
+AGENT_WARDEN_CLAUDE_HOME="$BR_CLAUDE_HOME" "$BRIDGE" serve --socket "$BR_SOCK" --claude "$BR/stub-claude" 2>/dev/null
+check "a second host on the same socket exits 75 and leaves the first alone" "75" "$?"
+kill -0 "$BR_HOST" 2>/dev/null
+check "and the first host is still running" "0" "$?"
+
+LIST="$("$BRIDGE" sessions --socket "$BR_SOCK")"
+contains "the bridge lists a session Warden only observes" "$ADOPT_A" "$LIST"
+
+"$BRIDGE" focus --session "$ADOPT_A" --socket "$BR_SOCK" >/dev/null
+check "focusing an observed tab goes to the app, and says so when the app is not there (exit 4)" "4" "$?"
+
+START="$("$BRIDGE" start --cwd "$PROJECT" --request-id smoke-start --socket "$BR_SOCK")"
+OWNED="$(printf '%s' "$START" | /usr/bin/python3 -c 'import json,sys;print(json.load(sys.stdin)["session"]["sessionID"])' 2>/dev/null)"
+contains "a new session starts in an approved directory" '"phase" : "accepted"' "$START"
+REFUSED="$("$BRIDGE" send --session "$OWNED" --message-id m1 --prompt "SMOKE-PROMPT-TEXT" --socket "$BR_SOCK")"
+check "a send without --authorize is refused (exit 3)" "3" "$?"
+contains "and says it needs an authorization" "authorizationRequired" "$REFUSED"
+"$BRIDGE" send --session "$OWNED" --message-id m1 --prompt "SMOKE-PROMPT-TEXT" \
+  --authorize "smoke test: the user approved this prompt" --socket "$BR_SOCK" >/dev/null
+check "a send with --authorize is accepted" "0" "$?"
+for _ in $(seq 1 50); do
+  "$BRIDGE" status --session "$OWNED" --socket "$BR_SOCK" | grep -q '"phase" : "completed"' && break
+  /bin/sleep 0.1
+done
+contains "the client acknowledged and completed that turn" '"phase" : "completed"' \
+  "$("$BRIDGE" status --session "$OWNED" --socket "$BR_SOCK")"
+contains "a fresh session is started with --session-id" "--session-id $OWNED" "$(cat "$BR/args.log")"
+
+AUTH="smoke test: the user asked Warden to take this session over"
+PREP="$("$BRIDGE" adopt prepare --session "$ADOPT_A" --request-id adopt-a --authorize "$AUTH" --socket "$BR_SOCK")"
+contains "preparing an adoption pins it and waits for the original client" '"phase" : "awaitingDetach"' "$PREP"
+kill -0 "$PID_A" 2>/dev/null
+check "and leaves the original client running" "0" "$?"
+"$BRIDGE" adopt complete --session "$ADOPT_A" --request-id adopt-a --authorize "$AUTH" --socket "$BR_SOCK" >/dev/null
+check "completing while the original still runs is refused (exit 3)" "3" "$?"
+missing "and nothing was resumed" "--resume $ADOPT_A" "$(cat "$BR/args.log")"
+kill "$PID_A" 2>/dev/null                            # the user types /exit in that tab
+for _ in $(seq 1 50); do kill -0 "$PID_A" 2>/dev/null || break; /bin/sleep 0.1; done
+DONE="$("$BRIDGE" adopt complete --session "$ADOPT_A" --request-id adopt-a --authorize "$AUTH" --socket "$BR_SOCK")"
+contains "once it has exited, the adoption completes" '"phase" : "adopted"' "$DONE"
+# The stub writes its command line as it starts, a moment after the host has launched it.
+for _ in $(seq 1 50); do grep -q -- "--resume $ADOPT_A" "$BR/args.log" 2>/dev/null && break; /bin/sleep 0.1; done
+contains "the same conversation is resumed" "--resume $ADOPT_A" "$(cat "$BR/args.log")"
+missing "never as a fork" "--fork-session" "$(cat "$BR/args.log")"
+
+PREP_B="$("$BRIDGE" adopt prepare --session "$ADOPT_B" --request-id adopt-b --detach terminate --authorize "$AUTH" --socket "$BR_SOCK")"
+contains "detach terminate asks an idle original to exit, and sees it go" '"phase" : "ready"' "$PREP_B"
+kill -0 "$PID_B" 2>/dev/null
+check "that one process is gone" "1" "$?"
+
+MCP_OUT="$(printf '%s\n' \
+  '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}' \
+  '{"jsonrpc":"2.0","method":"notifications/initialized"}' \
+  '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' \
+  '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"warden_list_sessions","arguments":{}}}' \
+  '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"warden_send_prompt","arguments":{"sessionId":"'"$ADOPT_A"'","messageId":"mcp-1","prompt":"continue","waitSeconds":10,"authorization":{"confirmed":true,"statement":"smoke: the user said continue"}}}}' \
+  '{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"warden_stop_session","arguments":{"sessionId":"'"$OWNED"'"}}}' \
+  | "$MCP" --socket "$BR_SOCK")"
+check "the MCP adapter answers every request and ignores the notification" "5" "$(printf '%s\n' "$MCP_OUT" | wc -l | tr -d ' ')"
+contains "it names itself" '"name":"agent-warden"' "$MCP_OUT"
+contains "and lists its tools" "warden_adopt_session" "$MCP_OUT"
+contains "listing marks the adopted session as owned" '"control":"owned"' "$MCP_OUT"
+contains "a send through MCP reports the client's acknowledgement" '"delivery":"acknowledged"' "$MCP_OUT"
+contains "a stop through MCP without approval is refused" "authorizationRequired" "$MCP_OUT"
+"$BRIDGE" status --session "$OWNED" --socket "$BR_SOCK" | grep -q '"phase" : "completed"'
+check "and that session was not stopped" "0" "$?"
+
+AUDIT="$(cat "$AGENT_ATTENTION_HOME/bridge-audit.jsonl" 2>/dev/null)"
+contains "the audit log records the adoption" '"operation":"adopt.complete"' "$AUDIT"
+contains "and who vouched for it" "the user asked Warden to take this session over" "$AUDIT"
+missing "but never a prompt's text" "SMOKE-PROMPT-TEXT" "$AUDIT"
+check "the audit log is private" "600" "$(stat -f '%OLp' "$AGENT_ATTENTION_HOME/bridge-audit.jsonl" 2>/dev/null)"
+
+kill -TERM "$BR_HOST" 2>/dev/null
+for _ in $(seq 1 80); do kill -0 "$BR_HOST" 2>/dev/null || break; /bin/sleep 0.1; done
+wait "$BR_HOST" 2>/dev/null
+check "the host stops cleanly on SIGTERM" "0" "$?"
+check "and no client it started outlives it" "0" "$(pgrep -f "$BR/stub-claude" | wc -l | tr -d ' ')"
+missing "and it removed its socket" "bridge.sock" "$(ls "$AGENT_ATTENTION_HOME")"
+
+echo
 echo "-----------------------------------------"
 printf 'passed: %d   failed: %d\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ] || exit 1

@@ -11,6 +11,30 @@ public protocol BridgeClientLaunching: Sendable {
                 model: String?,
                 onLine: @escaping (String) -> Void,
                 onExit: @escaping (Int32) -> Void) throws -> BridgeClientHandle
+    /// Continue an **existing** conversation under the same id. Only adoption asks for this.
+    func resume(sessionID: String,
+                cwd: String,
+                model: String?,
+                onLine: @escaping (String) -> Void,
+                onExit: @escaping (Int32) -> Void) throws -> BridgeClientHandle
+}
+
+public enum BridgeLaunchError: Error, LocalizedError {
+    case resumeUnsupported
+
+    public var errorDescription: String? {
+        "This launcher cannot resume an existing conversation."
+    }
+}
+
+public extension BridgeClientLaunching {
+    /// Refused unless a launcher says otherwise. Starting a fresh session where a resume was asked
+    /// for would hand a caller an empty conversation under a name it believes it knows.
+    func resume(sessionID: String, cwd: String, model: String?,
+                onLine: @escaping (String) -> Void,
+                onExit: @escaping (Int32) -> Void) throws -> BridgeClientHandle {
+        throw BridgeLaunchError.resumeUnsupported
+    }
 }
 
 /// A running client this host owns.
@@ -31,7 +55,7 @@ public extension BridgeClientHandle {
     var isRunning: Bool { true }
 }
 
-/// The Warden-owned bridge: sessions it started, and nothing else.
+/// The Warden-owned bridge: the sessions it owns, and read-only access to the ones it observes.
 ///
 /// **What this is.** A way for an authorised local caller to start a *new* official Claude Code
 /// session in an approved directory, send it a prompt, send a follow-up to the same session, and be
@@ -40,41 +64,65 @@ public extension BridgeClientHandle {
 /// either.
 ///
 /// **What this is not, and cannot be made into by asking nicely.** It does not attach to a session
-/// somebody already has open in a terminal. A session id it did not create is refused, always:
-/// adopting one would mean two things driving the same conversation, and the person at the keyboard
-/// would not know. Nor does it type into anything: the client is started as a child process with
-/// streaming input, which is the interface Claude Code documents for exactly this.
+/// somebody already has open in a terminal. A session id it does not own is refused for every
+/// write, always: two things driving the same conversation, with the person at the keyboard
+/// unaware, is not a feature. The one way a terminal session becomes owned is `adopt`, which only
+/// resumes the conversation once its original client has gone — see `BridgeHost+Control.swift`.
+/// Nor does it type into anything: the client is started as a child process with streaming input,
+/// which is the interface Claude Code documents for exactly this.
 ///
 /// **Ambiguity is reported, never resolved by guessing.** If the client disconnects or a deadline
 /// passes with no result, the turn is `uncertain` and stays that way. Nothing is resent
 /// automatically — a retry that a caller did not ask for is how one instruction becomes two.
 public final class BridgeHost: @unchecked Sendable {
-    private let launcher: BridgeClientLaunching
-    private let now: () -> Date
+    let launcher: BridgeClientLaunching
+    let now: () -> Date
     /// Directories a session may be started in. Empty means "none", not "any".
     private let approvedRoots: [String]
-    private let lock = NSLock()
-    private var sessions: [String: Session] = [:]
+    /// Approvals read fresh on every privileged request, when the host was given a source for
+    /// them. A settings edit then takes effect on the next request, without a restart that would
+    /// cost every owned session its client.
+    private let rootsProvider: (() -> [String])?
+    let lock = NSLock()
+    var sessions: [String: Session] = [:]
     private var startRequests: [String: (fingerprint: String, sessionID: String)] = [:]
 
     /// The launcher for visible sessions, when this host was given one. Absent means visible
     /// sessions are simply not offered — never quietly downgraded to a background client, which
     /// would give a caller a session it cannot see while telling it everything went fine.
-    private let visibleLauncher: BridgeClientLaunching?
+    let visibleLauncher: BridgeClientLaunching?
+    /// What Warden observes of the sessions in terminals. Absent means this host answers for its
+    /// own sessions only, as it always did.
+    let observed: ObservedSessionSource?
+    /// Where every change a caller asks for is written down, refusals included.
+    let audit: BridgeAuditRecording?
+    /// Adoptions by request id, and the order they arrived in, so the oldest finished one is the
+    /// first forgotten.
+    var adoptions: [String: AdoptionTicket] = [:]
+    var adoptionOrder: [String] = []
+    /// How long `detach: terminate` waits to see the original client go before answering. The
+    /// answer says `detaching` rather than `ready` when it has not gone yet.
+    var adoptionExitWait: TimeInterval = 3
 
     public init(launcher: BridgeClientLaunching,
                 approvedRoots: [String],
                 visibleLauncher: BridgeClientLaunching? = nil,
+                rootsProvider: (() -> [String])? = nil,
+                observed: ObservedSessionSource? = nil,
+                audit: BridgeAuditRecording? = nil,
                 now: @escaping () -> Date = Date.init) {
         self.visibleLauncher = visibleLauncher
         self.launcher = launcher
-        self.approvedRoots = approvedRoots.map { BridgeHost.normalise($0) }
+        self.approvedRoots = BridgeSettings.acceptableRoots(approvedRoots)
+        self.rootsProvider = rootsProvider
+        self.observed = observed
+        self.audit = audit
         self.now = now
     }
 
     // MARK: - One owned session
 
-    private final class Session {
+    final class Session {
         var state: BridgeSessionState
         var handle: BridgeClientHandle?
         var events: [BridgeEvent] = []
@@ -138,14 +186,25 @@ public final class BridgeHost: @unchecked Sendable {
     // MARK: - Requests
 
     public func handle(_ request: BridgeRequest) -> BridgeResponse {
+        let response: BridgeResponse
         switch request {
-        case .start(let start): return handleStart(start)
-        case .send(let send): return handleSend(send)
-        case .status(let sessionID): return handleStatus(sessionID)
-        case .events(let sessionID, let after): return handleEvents(sessionID, after: after)
-        case .stop(let sessionID): return handleStop(sessionID)
-        case .focus(let sessionID): return focus(sessionID: sessionID)
+        case .start(let start): response = handleStart(start)
+        case .send(let send): response = handleSend(send)
+        case .status(let sessionID): response = handleStatus(sessionID)
+        case .events(let sessionID, let after): response = handleEvents(sessionID, after: after)
+        case .stop(let sessionID, let authorization):
+            response = handleStop(sessionID, authorization: authorization)
+        case .focus(let sessionID): response = focus(sessionID: sessionID)
+        case .sessions: response = listSessions()
+        case .context(let sessionID, let maxMessages):
+            response = context(sessionID: sessionID, maxMessages: maxMessages)
+        case .summary(let sessionID): response = summary(sessionID: sessionID)
+        case .adopt(let adopt): response = handleAdopt(adopt)
         }
+        // After the fact, from the request and the answer together, so the log says what was
+        // asked, who vouched for it, and what actually happened — including every refusal.
+        audit?.record(request: request, response: response, at: now())
+        return response
     }
 
     private func handleStart(_ request: BridgeRequest.StartRequest) -> BridgeResponse {
@@ -308,6 +367,15 @@ public final class BridgeHost: @unchecked Sendable {
     }
 
     private func handleSend(_ request: BridgeRequest.SendRequest) -> BridgeResponse {
+        guard request.authorization?.isUsable == true else {
+            return refusal(.authorizationRequired,
+                           "A send needs an authorization: a confirmed statement that a person "
+                           + "approved this prompt. Nothing was written.")
+        }
+        // An adopted conversation lives in a transcript other clients can also open. Before every
+        // write, nothing else may be holding it — checked outside the lock, because it reads the
+        // registry and the process table.
+        if let conflict = foreignWriterRefusal(for: request.sessionID) { return conflict }
         guard BridgeHost.isUsableIdentifier(request.messageID) else {
             return refusal(.malformed, "A message id must be 1…\(BridgeProtocol.maximumIdentifierLength) printable characters.")
         }
@@ -319,8 +387,9 @@ public final class BridgeHost: @unchecked Sendable {
         guard let session = sessions[request.sessionID] else {
             defer { lock.unlock() }
             return refusal(.notOwned,
-                           "This host did not start session \(request.sessionID), so it will not "
-                           + "send to it. Sessions opened in a terminal are observed, never driven.")
+                           "This host does not own session \(request.sessionID), so it will not "
+                           + "send to it. A session opened in a terminal is observed, never driven "
+                           + "— adopt it first if it should be.")
         }
         guard !session.stopRequested, session.state.exitStatus == nil else {
             defer { lock.unlock() }
@@ -413,7 +482,7 @@ public final class BridgeHost: @unchecked Sendable {
 
     /// The wire view of a session: its own state plus the job registry and autonomous marker,
     /// which live beside the phase rather than inside it.
-    private func published(_ session: Session) -> BridgeSessionState {
+    func published(_ session: Session) -> BridgeSessionState {
         let moment = now()
         // A client that has gone cannot have anything running *now*. Its rows are history, and are
         // marked stale whatever their age — the alternative is a dead session showing live work.
@@ -471,8 +540,13 @@ public final class BridgeHost: @unchecked Sendable {
     public func focus(sessionID: String) -> BridgeResponse {
         lock.lock()
         guard let session = sessions[sessionID] else {
-            defer { lock.unlock() }
-            return refusal(.notOwned, "This host did not start session \(sessionID).")
+            lock.unlock()
+            // Not ours: the tab the user linked to it, validated by the app that made the link —
+            // or nothing. There is no search by title or directory to fall back on.
+            guard let observed else {
+                return refusal(.notOwned, "This host did not start session \(sessionID).")
+            }
+            return observed.focus(sessionID: sessionID)
         }
         guard let visible = session.handle as? VisibleClaudeHandle else {
             defer { lock.unlock() }
@@ -493,6 +567,10 @@ public final class BridgeHost: @unchecked Sendable {
         return BridgeResponse(ok: true, session: snapshot)
     }
 
+    /// Where a stop the host decides on by itself runs. A queue of its own rather than the shared
+    /// pool, which a busy process can exhaust — a stop has to happen, not wait for a free thread.
+    static let terminations = DispatchQueue(label: "ai.wundamental.agent-warden.bridge.terminate")
+
     /// How long a reading stays a claim about now. Stated by the host so a caller does not have to
     /// know it — the whole point of reporting `stale` rather than only a timestamp.
     public static let freshnessWindow: TimeInterval = 30 * 60
@@ -506,7 +584,12 @@ public final class BridgeHost: @unchecked Sendable {
             return BridgeHost.fitted(BridgeResponse(ok: true, sessions: all.map(BridgeHost.trimmed)))
         }
         guard let session = sessions[sessionID] else {
-            return refusal(.notOwned, "This host does not own session \(sessionID).")
+            // Status is a read, so an observed session answers too — from the same report
+            // `aa-status` gives, marked as observed rather than owned.
+            if let row = observed?.rows().sessions.first(where: { $0.sessionID == sessionID }) {
+                return BridgeResponse(ok: true, observed: [row])
+            }
+            return refusal(.notOwned, "This host neither owns nor observes session \(sessionID).")
         }
         return BridgeHost.fitted(BridgeResponse(ok: true, session: BridgeHost.trimmed(published(session))))
     }
@@ -598,12 +681,22 @@ public final class BridgeHost: @unchecked Sendable {
         return trimmed
     }
 
-    private func handleStop(_ sessionID: String) -> BridgeResponse {
+    private func handleStop(_ sessionID: String, authorization: BridgeAuthorization?) -> BridgeResponse {
+        guard authorization?.isUsable == true else {
+            return refusal(.authorizationRequired,
+                           "A stop needs an authorization: a confirmed statement that a person "
+                           + "approved it. Nothing was stopped.")
+        }
         lock.lock()
         guard let session = sessions[sessionID] else {
             defer { lock.unlock() }
             return refusal(.notOwned,
                            "This host did not start session \(sessionID), so it will not stop it.")
+        }
+        // Asked already: the answer is where that stop has got to, and the client is not asked again.
+        guard !session.stopRequested else {
+            defer { lock.unlock() }
+            return BridgeResponse(ok: true, session: session.state)
         }
         session.stopRequested = true
         session.inFlight = nil                    // stopping resolves the turn: nothing is owed now
@@ -718,6 +811,22 @@ public final class BridgeHost: @unchecked Sendable {
         // client speaking — it is the process failing — so it is recorded and attributes nothing.
         if type == "system", (object["subtype"] as? String) == "stderr" {
             append(.error, to: session, text: (object["text"] as? String).map { String($0.prefix(1_000)) })
+            return
+        }
+
+        // An adopted session must continue *its* conversation. A client announcing another id has
+        // started a copy: the adopted conversation is not being written, and every answer from here
+        // would belong to something the caller never asked for. It is stopped, and says why.
+        if session.state.adoptedFrom != nil, !session.stopRequested, type == "system",
+           (object["subtype"] as? String) == "init", let reported, reported != sessionID {
+            session.stopRequested = true
+            session.inFlight = nil
+            session.state.phase = .failed
+            append(.error, to: session,
+                   text: "the resumed client started conversation \(reported.prefix(64)) instead of "
+                       + "continuing \(sessionID); it has been stopped and nothing more will be sent")
+            let handle = session.handle
+            BridgeHost.terminations.async { handle?.terminate() }   // never under the lock
             return
         }
 
@@ -1099,7 +1208,7 @@ public final class BridgeHost: @unchecked Sendable {
 
     // MARK: - Helpers
 
-    private func append(_ kind: BridgeEvent.Kind, to session: Session,
+    func append(_ kind: BridgeEvent.Kind, to session: Session,
                         text: String? = nil, messageID: String? = nil) {
         session.state.lastSequence += 1
         session.events.append(BridgeEvent(sequence: session.state.lastSequence, at: now(),
@@ -1113,12 +1222,13 @@ public final class BridgeHost: @unchecked Sendable {
         session.state.lastEventAt = now()
     }
 
-    private func refusal(_ code: BridgeError.Code, _ message: String) -> BridgeResponse {
+    func refusal(_ code: BridgeError.Code, _ message: String) -> BridgeResponse {
         BridgeResponse(ok: false, error: BridgeError(code: code, message: message))
     }
 
-    private func isApproved(_ path: String) -> Bool {
-        approvedRoots.contains { root in
+    func isApproved(_ path: String) -> Bool {
+        let roots = rootsProvider.map { BridgeSettings.acceptableRoots($0()) } ?? approvedRoots
+        return roots.contains { root in
             path == root || path.hasPrefix(root.hasSuffix("/") ? root : root + "/")
         }
     }

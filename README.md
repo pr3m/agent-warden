@@ -35,7 +35,7 @@ lists exactly which. Reports welcome.
 - [What it does](#what-it-does) · [The bubble](#the-bubble) · [What raises an alert](#what-raises-an-alert)
 - [Sessions already running](#sessions-that-were-already-running) · [Waiting on background work](#waiting-on-background-work)
 - [Names and branches](#what-a-session-is-called-and-what-branch-it-is-on) · [Linking a tab](#linking-a-session-to-its-ghostty-tab) · [Asking what a session is working on](#asking-what-a-session-is-working-on)
-- [Clicking a row](#clicking-a-row--what-actually-happens) · [The orchestration contract](#the-orchestration-contract) · [The session bridge](#the-session-bridge--sessions-warden-owns)
+- [Clicking a row](#clicking-a-row--what-actually-happens) · [The orchestration contract](#the-orchestration-contract) · [The session bridge](#the-session-bridge--sessions-warden-owns) · [MCP](#connecting-an-mcp-client)
 - [**Install**](#install) · [Roam](#roam) · [Querying it without a screenshot](#querying-it-without-a-screenshot)
 - [How it works](#how-it-works) · [Settings](#settings) · [Development](#development) · [Status and roadmap](#status-and-roadmap)
 
@@ -591,8 +591,8 @@ the work changes or the revision does. That last step is the whole protocol: the
 push, and no automatic reload.
 
 **What selecting a document does not do.** It is not an authorisation and it creates no permission.
-It does not make any assistant, voice task or tool load or follow anything — there is no MCP server
-here, no automatic loading and no wakeup. Each tool still decides for itself inside its own
+It does not make any assistant, voice task or tool load or follow anything — there is no automatic
+loading and no wakeup, and the MCP adapter below does not serve it. Each tool still decides for itself inside its own
 boundaries. The contract is *your policy expressed in one place*; project `CLAUDE.md` and `.claude`
 harness files remain authoritative for project workflow, Agent Warden handles live sessions and
 transport, and Jira and git keep the ticket and code records.
@@ -609,43 +609,107 @@ clear missing state, rather than being quietly forgotten.
 
 ## The session bridge — sessions Warden owns
 
-`aa-bridge` is a local interface for driving Claude Code sessions **Agent Warden started itself**.
-It is how a voice assistant, or any local caller, can put a session to work and be told honestly
-what happened.
+`aa-bridge` is the local interface for driving Claude Code sessions **Agent Warden owns** — ones it
+started, or terminal sessions you handed over to it — and for reading the ones it only observes. It
+is how a voice assistant, or any local caller, can put a session to work and be told honestly what
+happened.
 
 ```bash
-aa-bridge serve --approve <dir> [--no-tools] [--socket <path>]   # the host: owns the socket and its sessions
-aa-bridge start --cwd <dir> --request-id <id> [--model opus]     # a NEW session, id generated here
-aa-bridge send  --session <uuid> --message-id <id> --prompt …    # one turn at a time
-aa-bridge focus --session <uuid>                                 # bring its own tab to the front
-aa-bridge status [--session <uuid>]                              # the whole host, or one session
-aa-bridge events|stop --session <uuid>
+aa-bridge sessions                                   # owned and observed, kept apart
+aa-bridge status|context|summary|events --session <uuid>
+aa-bridge focus --session <uuid>                     # its own tab, exact or nothing
+aa-bridge start --cwd <dir> --request-id <id> [--model opus] [--terminal ghostty]
+aa-bridge send  --session <uuid> --message-id <id> --prompt … --authorize "<what you approved>"
+aa-bridge stop  --session <uuid> --authorize "<what you approved>"
+aa-bridge adopt prepare|complete|cancel --session <uuid> --request-id <id> --authorize "…"
 ```
 
-- **Owned sessions only.** A session id this host did not create is refused, always. The sessions in
-  your terminals are *observed* by Agent Warden and never driven — two things steering one
-  conversation, with only one of them visible to you, is not a feature.
+- **Writes go to owned sessions only.** A session in your terminal is observed — listed, read,
+  summarised, focused — and never written to. The one way it becomes owned is `adopt`, below.
+- **Send, stop and adopt need `--authorize`**: a sentence saying what a person approved. It is
+  written to `bridge-audit.jsonl` (0600, bounded) with the outcome, refusals included. Prompts
+  are recorded as a digest, never as text.
 - **The states are kept apart.** Written to a pipe, acknowledged *by the client* (its own echo of our
   message, carrying an id we put there), active, a result, completed, failed — or **uncertain**, when
   a client goes or a deadline passes. Nothing is ever resent automatically.
 - **One turn at a time per session**, so a result can only ever belong to one request. A second send
-  is refused as busy rather than queued into ambiguity.
-- **One answer settles one turn.** A result is remembered by its own identity — the `uuid` the
-  documented frame carries — so a replayed answer cannot mark a later turn complete. `session_id`
-  names the conversation, not the turn, and is never treated as if it did. A *success* additionally
-  needs that turn to have been acknowledged: claiming an outcome for a prompt we cannot show the
-  client received is exactly the kind of confidence this thing is built to avoid.
-- **`stopping` is not `stopped`.** Asking a client to stop and the client having gone are different
-  claims, and the phase says which one you have. Only an observed exit turns one into the other.
+  is refused as busy rather than queued into ambiguity. A result is matched by its own identity,
+  and a success additionally needs the turn to have been acknowledged.
+- **`stopping` is not `stopped`.** Only an observed exit turns one into the other.
+- **Reads are bounded and identity-first.** `context` opens a transcript only for a session whose
+  live process Warden can pin. `summary` returns facts, each naming its source (`queue`,
+  `transcript`, `bridge`, `process`) and time; its headline is built from those facts and nothing else.
 - **Local only.** A Unix socket at 0600 in your own data directory. No port, no token, no network.
-- **Permissions stay Claude Code's.** The client runs with `--permission-prompts none`; nothing here
+- **Permissions stay Claude Code's.** Clients run with `--permission-prompts none`; nothing here
   answers a permission on your behalf and `--dangerously-skip-permissions` is not reachable.
 
-Live acceptance: `AGENT_WARDEN_LIVE_BRIDGE=1 ./Scripts/bridge-live-check.sh` — one disposable
-session in a scratch directory, two harmless prompts, evidence in `build/qa/bridge-live/`.
+### The host runs with the app
 
-`aa-bridge` ships inside the app bundle. **The app does not start it**: a host runs only when you
-run one, and only with directories you name.
+The app starts `aa-bridge serve` from its own bundle when it launches, restarts it after a crash
+(backing off from 1 s to a minute), asks it for its status every 30 s and restarts it after three
+missed answers, and stops it — and every session it owns — when you quit. A host you started by
+hand on the same socket is left alone: the app's host exits 75 and the app asks again every 30 s.
+The host's own messages go to `bridge-host.log`.
+
+Where sessions may be started or adopted is **your** list, in `bridge.json` in the data directory.
+Warden never writes it; the host re-reads it on every request, so an edit needs no restart.
+
+```json
+{ "enabled": true, "approvedRoots": ["~/dev/acme-api", "~/dev/acme-web"] }
+```
+
+No file means no directory at all — the bridge still lists, reads and focuses. A root of `/`, your
+home directory or anything above it, or a system tree, is ignored. `"enabled": false` stops the app
+from running a host.
+
+### Taking over a session you started in a terminal
+
+Claude Code continues a conversation programmatically in exactly one supported way: a new client
+resumed by id. Two clients on one conversation write into the same transcript, so the terminal's
+client has to be gone first — and Warden will not type `/exit` into your tab. So adoption is a
+handoff in steps:
+
+| Step | What happens |
+|---|---|
+| `adopt prepare` | Pins the exact conversation and Claude process (pid and start time). Checks the directory is approved and the transcript exists. Signals nothing. Answers `awaitingDetach` and says what to do: exit Claude in that tab |
+| you type `/exit` | Or pass `--detach terminate` to `prepare`: one SIGTERM to that verified process, only while it is idle — never mid-turn, never with background work running, never twice, never SIGKILL |
+| `adopt complete` | Refused while the original, or any other process in Claude Code's session registry, holds the conversation — or while the registry cannot be read. Otherwise resumes it with `claude --resume <id>` (never `--fork-session`) under the **same** session id, in the background or a new Ghostty tab |
+| `adopt cancel` | Forgets a prepared adoption. Nothing else changes |
+
+After that the session is owned: `send`, `status`, `events` and `stop` use its id. Before every
+send to it, the registry is checked again, and a second client on the conversation — you resuming
+it in a terminal as well, say — makes the send a `writerConflict` with nothing written. A resumed
+client that announces a different conversation id is stopped.
+
+Live acceptance: `AGENT_WARDEN_LIVE_ADOPT=1 ./Scripts/adopt-live-check.sh` — one disposable
+conversation, an interactive client on a private pty, a sandboxed Warden home, evidence in
+`build/qa/adopt-live/evidence/`. `AGENT_WARDEN_LIVE_BRIDGE=1 ./Scripts/bridge-live-check.sh` checks
+the start-and-send path the same way.
+
+### Connecting an MCP client
+
+`aa-mcp` serves the same operations as a local MCP server over stdio (JSON-RPC 2.0, protocol
+`2025-06-18`, also `2025-03-26` and `2024-11-05`). It holds no state and no authority of its own:
+every tool is one request to the host, so every rule above applies.
+
+```bash
+~/Applications/AgentWarden.app/Contents/MacOS/aa-mcp --print-config
+```
+
+```json
+{ "mcpServers": { "agent-warden": { "type": "stdio",
+    "command": "/Users/you/Applications/AgentWarden.app/Contents/MacOS/aa-mcp", "args": [] } } }
+```
+
+| Tool | Changes a session? |
+|---|---|
+| `warden_list_sessions`, `warden_session_status`, `warden_session_events`, `warden_session_context`, `warden_session_summary` | No — read-only |
+| `warden_focus_session`, `warden_start_session` | Moves a tab forward / starts a new owned session |
+| `warden_send_prompt`, `warden_adopt_session`, `warden_stop_session` | Yes — `destructiveHint`, and they require `authorization: {confirmed, statement}` |
+
+`warden_send_prompt` waits up to 30 s for the client's own acknowledgement and reports `delivery`
+as `acknowledged`, `notYetAcknowledged`, `uncertain`, `failed` or `notSent`. The installer does not
+link `aa-mcp` onto your `PATH`; point the client at the bundle path.
 
 ### A session you can watch
 
@@ -679,9 +743,8 @@ Direct two-way use — you typing in the same session the API drives — is a **
 needs a supported transport that can carry both, and an arbitration rule for whose message is whose.
 It is not simulated here with keystroke injection, a second Claude process, or an attach mirror.
 
-**What this is not.** It does not enable a channel into a session already open in a terminal, it is
-not hosted by the Agent Warden app, and it does not wake a voice conversation. All three are
-separate, and none of them is built.
+**What this is not.** It does not open a channel into a session while it is still open in your
+terminal — adoption ends that client first — and it does not wake a voice conversation.
 
 ## Install
 
@@ -909,9 +972,9 @@ same to a script.
   it is counted in `counts.sessionsWaitingOnBackground`.
 - `warnings` carries plain sentences for anything that makes the numbers misleading.
 
-There is no MCP server. The JSON above is the whole interface, and a shell command is a cheaper way
-for an assistant to reach it than a protocol. Any assistant querying this still spends its own
-context on the answer, which is why the payload is compact.
+The JSON above is the whole interface for `aa-status`; an MCP client reaches the same rows through
+`warden_list_sessions`. Any assistant querying this still spends its own context on the answer,
+which is why the payload is compact.
 
 ## How it works
 

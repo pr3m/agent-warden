@@ -5,7 +5,7 @@ import Foundation
 public enum AgentAttentionVersion {
     public static let displayName = "Agent Warden"
 
-    public static let string = "0.14.0"
+    public static let string = "0.15.0"
     /// Bumped when the on-disk event/heartbeat/state formats change incompatibly.
     public static let storageGeneration = 1
 }

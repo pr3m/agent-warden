@@ -9,6 +9,7 @@ let package = Package(
         .executable(name: "aa-emit", targets: ["AAEmit"]),
         .executable(name: "aa-status", targets: ["AAStatus"]),
         .executable(name: "aa-bridge", targets: ["AABridge"]),
+        .executable(name: "aa-mcp", targets: ["AAMCP"]),
         .executable(name: "aa-session", targets: ["AASession"]),
         .executable(name: "aa-powerd", targets: ["AAPowerd"]),
         .executable(name: "aa-roam", targets: ["AARoam"]),
@@ -35,6 +36,11 @@ let package = Package(
         ),
         .executableTarget(
             name: "AABridge",
+            dependencies: ["AgentAttentionCore"],
+            swiftSettings: [.swiftLanguageMode(.v5)]
+        ),
+        .executableTarget(
+            name: "AAMCP",
             dependencies: ["AgentAttentionCore"],
             swiftSettings: [.swiftLanguageMode(.v5)]
         ),

@@ -41,7 +41,7 @@ if arguments.isEmpty || arguments.contains("--help") {
     aa-session \(AgentAttentionVersion.string) — the Agent Warden session that runs in your terminal
 
       aa-session --session-id <uuid> --cwd <dir> --claude <path>
-                 --inbox <pipe> --outbox <pipe> [--model <name>] [--no-tools]
+                 --inbox <pipe> --outbox <pipe> [--model <name>] [--no-tools] [--resume]
 
     Started by `aa-bridge start --terminal ghostty`. It runs Claude Code here, in this tab, and
     relays Agent Warden's messages to it. It is not meant to be run by hand.
@@ -113,8 +113,10 @@ show(TranscriptRenderer.header(sessionID: sessionID, cwd: cwd, model: model))
 let process = Process()
 process.executableURL = URL(fileURLWithPath: claude)
 process.arguments = ClaudeStreamLauncher.arguments(sessionID: sessionID, model: model,
-                                                   withoutTools: arguments.contains("--no-tools"))
+                                                   withoutTools: arguments.contains("--no-tools"),
+                                                   resume: arguments.contains("--resume"))
 process.currentDirectoryURL = URL(fileURLWithPath: cwd)
+process.environment = ClaudeStreamLauncher.independentEnvironment(ProcessInfo.processInfo.environment)
 
 let input = Pipe()
 let output = Pipe()
