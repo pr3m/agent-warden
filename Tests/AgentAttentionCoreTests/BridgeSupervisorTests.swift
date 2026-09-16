@@ -247,7 +247,7 @@ struct MCPServerTests {
         #expect(seen.isEmpty)
     }
 
-    @Test("Every operation is a tool; four change something and say so, and three of those need approval")
+    @Test("Every operation is a tool; five change something and say so, and four of those need approval")
     func toolList() {
         let server = MCPServer(transport: { _ in BridgeResponse(ok: true) })
         let tools = (call(server, "tools/list")["result"] as? [String: Any])?["tools"] as? [[String: Any]] ?? []
@@ -255,7 +255,7 @@ struct MCPServerTests {
         #expect(names == ["warden_list_sessions", "warden_session_status", "warden_session_events",
                           "warden_session_context", "warden_session_summary", "warden_focus_session",
                           "warden_start_session", "warden_send_prompt", "warden_adopt_session",
-                          "warden_stop_session"])
+                          "warden_stop_session", "warden_open_session_terminal"])
         for tool in tools {
             let name = tool["name"] as! String
             let destructive = (tool["annotations"] as? [String: Any])?["destructiveHint"] as? Bool
@@ -265,9 +265,11 @@ struct MCPServerTests {
             // destructive tools should surface it — but it carries no authorization field, because
             // nothing about it is the user's word to give.
             let changes = ["warden_start_session", "warden_send_prompt",
-                           "warden_adopt_session", "warden_stop_session"].contains(name)
+                           "warden_adopt_session", "warden_stop_session",
+                           "warden_open_session_terminal"].contains(name)
             let needsApproval = ["warden_send_prompt", "warden_adopt_session",
-                                 "warden_stop_session"].contains(name)
+                                 "warden_stop_session",
+                                 "warden_open_session_terminal"].contains(name)
             #expect(destructive == changes, "\(name)")
             #expect(required.contains("authorization") == needsApproval, "\(name)")
         }

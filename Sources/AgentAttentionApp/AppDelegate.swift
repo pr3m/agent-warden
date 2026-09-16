@@ -254,6 +254,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func refresh() {
         reloadConfigIfChanged()
+        // Asked on this cadence rather than when a menu opens, so the ⋯ menu never waits on the
+        // session host. A stale answer costs one menu item; a blocked main thread costs the app.
+        bridge.refreshSessionsWithoutTerminals()
 
         // Prune first. Reading heartbeats before pruning would let a dead session be re-adopted
         // and re-pruned on alternate ticks forever.
@@ -556,6 +559,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         panel.pairingLookup = { [weak self] sessionID in self?.pairings.pairing(for: sessionID) }
         panel.onLinkTerminal = { [weak self] identity in
             self?.presentPairingWindow(for: identity)
+        }
+        // Read from a cache the bridge service refreshes, never asked over the socket here: this is
+        // answered while a menu is being built, on the main thread.
+        panel.canOpenTerminal = { [weak self] sessionID in
+            self?.bridge.sessionsWithoutTerminals.contains(sessionID) == true
+        }
+        panel.onOpenTerminal = { [weak self] identity in
+            guard let self else { return }
+            self.bridge.openTerminal(sessionID: identity.sessionID) { [weak self] response in
+                guard let self else { return }
+                self.log("open terminal \(identity.projectName): "
+                       + (response.ok ? "handing over" : (response.error?.message ?? "refused")))
+                if response.ok {
+                    // Said as the process it is. The tab appears once the old client has gone, and
+                    // claiming it is already there would be a promise this cannot keep.
+                    self.panel.flash("Handing \(identity.projectName) to a Ghostty tab…")
+                } else {
+                    self.panel.flash(response.error?.message
+                                     ?? "That session could not be given a terminal.", seconds: 14)
+                }
+                self.bridge.refreshSessionsWithoutTerminals()
+            }
         }
         panel.onShowContext = { [weak self] identity in
             guard let self else { return }

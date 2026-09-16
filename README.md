@@ -705,13 +705,19 @@ every tool is one request to the host, so every rule above applies.
 |---|---|
 | `warden_list_sessions`, `warden_session_status`, `warden_session_events`, `warden_session_context`, `warden_session_summary` | No — read-only |
 | `warden_focus_session`, `warden_start_session` | Moves a tab forward / starts a new owned session |
-| `warden_send_prompt`, `warden_adopt_session`, `warden_stop_session` | Yes — `destructiveHint`, and they require `authorization: {confirmed, statement}` |
+| `warden_send_prompt`, `warden_adopt_session`, `warden_stop_session`, `warden_open_session_terminal` | Yes — `destructiveHint`, and they require `authorization: {confirmed, statement}` |
 
 `warden_send_prompt` waits up to 30 s for the client's own acknowledgement and reports `delivery`
 as `acknowledged`, `notYetAcknowledged`, `uncertain`, `failed` or `notSent`. The installer does not
 link `aa-mcp` onto your `PATH`; point the client at the bundle path.
 
 ### A session you can watch
+
+A session that started in the background can be given a terminal afterwards, from the `⋯` menu on
+its panel row or with `warden_open_session_terminal`. It is a hand-over rather than a second view: a
+running client cannot be moved onto a new tab, and one conversation takes one client, so the old one
+is stopped and the same conversation reopens in a tab once that exit is confirmed. A session still
+working on a turn is refused rather than interrupted.
 
 By default a bridge session runs in the background, exactly as before. Add `--terminal ghostty` and
 it opens in a **new Ghostty tab instead**:

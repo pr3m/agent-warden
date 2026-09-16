@@ -535,7 +535,12 @@ public enum GroundedSummary {
         let name = row?.displayName ?? context?.displayName
             ?? owned.map { ($0.cwd as NSString).lastPathComponent } ?? "This session"
         let headline: String
-        if let owned, owned.phase == .active || owned.phase == .clientAcknowledged {
+        if let owned, owned.phase == .handingOver {
+            // Said explicitly, because this is the one phase where the session has no client at all
+            // and is still not over. Without it the summary falls through to "nothing else is
+            // known" at exactly the moment something is happening to the session.
+            headline = "\(name) is moving to a terminal of its own; its client is being restarted."
+        } else if let owned, owned.phase == .active || owned.phase == .clientAcknowledged {
             headline = "\(name) is working on a prompt Warden sent."
         } else if let owned, [.completed, .failed, .uncertain, .stopped, .stopping].contains(owned.phase) {
             headline = "\(name): its last Warden prompt is \(owned.phase.rawValue)."

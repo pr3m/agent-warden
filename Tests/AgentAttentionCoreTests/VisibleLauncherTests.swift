@@ -223,13 +223,33 @@ struct VisibleLauncherTests {
 private final class RecordingVisibleLauncher: BridgeClientLaunching, @unchecked Sendable {
     let surfaces = FakeSurfaces()
     private(set) var launches = 0
+    private(set) var resumes: [String] = []
     var failure: Error?
+    /// Lets a test hold a resume open and look at the host while it is in flight.
+    var beforeResume: (() -> Void)?
+    /// Hand back a plain stand-in instead of a real visible handle.
+    ///
+    /// A real one makes two named pipes and a reader thread that blocks for ever on a relay no test
+    /// runs, and its `terminate` then waits 1.5s for a client that will never say it has gone.
+    /// Paid once for the test that reads a surface back; anywhere else it is seconds of blocked
+    /// threads, which is how this suite started starving the tests that time their own waits.
+    var lightweight = false
+
+    func resume(sessionID: String, cwd: String, model: String?,
+                onLine: @escaping (String) -> Void,
+                onExit: @escaping (Int32) -> Void) throws -> BridgeClientHandle {
+        beforeResume?()
+        resumes.append(sessionID)
+        return try launch(sessionID: sessionID, cwd: cwd, model: model,
+                          onLine: onLine, onExit: onExit)
+    }
 
     func launch(sessionID: String, cwd: String, model: String?,
                 onLine: @escaping (String) -> Void,
                 onExit: @escaping (Int32) -> Void) throws -> BridgeClientHandle {
         launches += 1
         if let failure { throw failure }
+        if lightweight { return FakeHandle(pid: Int32(9000 + launches)) }
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("warden-visible-host-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true,
@@ -614,5 +634,269 @@ struct GhosttySurfaceScriptTests {
             #expect(creation.contains("(id of theTerminal)"))
             #expect(creation.contains("(id of theTab)"))
         }
+    }
+}
+
+/// Giving a session that started headless a terminal of its own, after the fact.
+///
+/// The defect this suite exists for: a running client cannot be moved onto a new tab's pty, so the
+/// obvious implementation — open a tab alongside the process — puts two clients on one transcript,
+/// which `foreignWriterRefusal` already treats as a fault. The hand-over is therefore a stop and a
+/// resume, and the resume must not start until the first client is **confirmed** gone.
+/// Serialized: a real visible handle's `terminate` waits up to 1.5s for a client that no test has,
+/// and running several of those beside the rest of the suite starved tests that time their own
+/// waits — a flake this suite caused rather than found.
+@Suite("Handing a headless session a terminal", .serialized)
+struct HandoverTests {
+    private let scratch = FileManager.default.temporaryDirectory.path
+
+    private func host(visible: BridgeClientLaunching?) -> (BridgeHost, FakeLauncher) {
+        let background = FakeLauncher()
+        return (BridgeHost(launcher: background, approvedRoots: [scratch],
+                           visibleLauncher: visible), background)
+    }
+
+    /// The hand-over finishes on the old client's exit, off the caller's thread. Polled rather than
+    /// slept on, so a slow machine does not turn a pass into a flake.
+    private func waitUntil(_ seconds: TimeInterval = 5, _ condition: () -> Bool) -> Bool {
+        let deadline = Date().addingTimeInterval(seconds)
+        while Date() < deadline {
+            if condition() { return true }
+            usleep(20_000)
+        }
+        return condition()
+    }
+
+    private let approval = BridgeAuthorization(confirmed: true, statement: "the user asked for this")
+
+    @Test("The tab is not opened until the headless client is confirmed gone")
+    func theResumeWaitsForTheExit() {
+        let visible = RecordingVisibleLauncher()
+        // A stand-in, not a real visible handle. That the hand-over reports its new surface is the
+        // same code `theOptInOpensASurface` already covers; what is unique here is the *ordering*,
+        // and paying 1.5s of blocked thread to re-assert the surface starved the tests that time
+        // their own waits.
+        visible.lightweight = true
+        let (bridge, background) = host(visible: visible)
+        let session = bridge.handle(.start(.init(requestID: "r1", cwd: scratch))).session!
+
+        let asked = bridge.handle(.openTerminal(sessionID: session.sessionID, terminal: "ghostty",
+                                            authorization: approval))
+        #expect(asked.ok)
+        #expect(asked.session?.phase == .handingOver, "asked for, not yet done")
+        #expect(visible.resumes.isEmpty,
+                "the old client is still up; a resume now would be a second writer")
+        // Dispatched, not called inline — terminating can block, and the caller must not wait on it.
+        #expect(waitUntil { background.handle(session.sessionID)?.terminated == true })
+
+        background.fireExit(session.sessionID)
+        #expect(waitUntil { !visible.resumes.isEmpty })
+        #expect(visible.resumes == [session.sessionID], "the same conversation, not a new one")
+
+        let after = bridge.handle(.status(sessionID: session.sessionID)).session
+        #expect(after?.exitStatus == nil, "the session is live again, not a stopped one")
+        #expect(after?.phase == .active)
+        _ = bridge.handle(.stop(sessionID: session.sessionID))
+    }
+
+    @Test("A session still working on a turn refuses, so no reply is thrown away")
+    func midTurnIsRefused() {
+        let visible = RecordingVisibleLauncher()
+        visible.lightweight = true
+        let (bridge, background) = host(visible: visible)
+        let session = bridge.handle(.start(.init(requestID: "r1", cwd: scratch))).session!
+        #expect(bridge.handle(.send(.init(sessionID: session.sessionID, messageID: "m1",
+                                          prompt: "hello",
+                                          authorization: approval))).ok)
+
+        let refused = bridge.handle(.openTerminal(sessionID: session.sessionID, terminal: "ghostty",
+                                            authorization: approval))
+        #expect(!refused.ok)
+        #expect(refused.error?.code == .busy)
+        #expect(visible.resumes.isEmpty)
+        #expect(background.handle(session.sessionID)?.terminated == false,
+                "a refused hand-over must not have stopped the client on its way to refusing")
+    }
+
+    @Test("A session that already has a terminal is refused — focus is the verb for that")
+    func aVisibleSessionIsRefused() {
+        let visible = RecordingVisibleLauncher()   // a real one: the refusal is about its surface
+        let (bridge, _) = host(visible: visible)
+        let session = bridge.handle(.start(.init(requestID: "r1", cwd: scratch,
+                                                 terminal: "ghostty"))).session!
+
+        let refused = bridge.handle(.openTerminal(sessionID: session.sessionID, terminal: "ghostty",
+                                            authorization: approval))
+        #expect(!refused.ok)
+        #expect(visible.resumes.isEmpty, "it has a terminal; handing it another would abandon one")
+        _ = bridge.handle(.stop(sessionID: session.sessionID))
+    }
+
+    @Test("A host with no visible launcher refuses rather than stopping the session for nothing")
+    func withoutSupportTheSessionIsLeftAlone() {
+        let (bridge, background) = host(visible: nil)
+        let session = bridge.handle(.start(.init(requestID: "r1", cwd: scratch))).session!
+
+        let refused = bridge.handle(.openTerminal(sessionID: session.sessionID, terminal: "ghostty",
+                                            authorization: approval))
+        #expect(!refused.ok)
+        #expect(refused.error?.code == .clientUnavailable)
+        #expect(background.handle(session.sessionID)?.terminated == false,
+                "the session it could not move is the session it must not kill")
+    }
+
+    @Test("Without the user's approval nothing is stopped, whoever is asking")
+    func approvalIsRequired() {
+        // Production mutation this catches: treating a hand-over as a read because the conversation
+        // survives it. An agent on the other end of MCP could then end a client the user was
+        // watching, with nothing in the audit log vouching for it.
+        let visible = RecordingVisibleLauncher()
+        visible.lightweight = true
+        let (bridge, background) = host(visible: visible)
+        let session = bridge.handle(.start(.init(requestID: "r1", cwd: scratch))).session!
+
+        let refused = bridge.handle(.openTerminal(sessionID: session.sessionID, terminal: "ghostty",
+                                                  authorization: nil))
+        #expect(!refused.ok)
+        #expect(refused.error?.code == .authorizationRequired)
+        #expect(background.handle(session.sessionID)?.terminated == false)
+        #expect(visible.resumes.isEmpty)
+    }
+
+    @Test("A host shutting down abandons a hand-over rather than opening a terminal on its way out")
+    func shutdownAbandonsTheHandover() {
+        // The defect this catches: `stopAll` terminates every client, and a pending hand-over would
+        // then complete on that exit — opening a Ghostty tab and starting a client at the moment
+        // the host is going, leaving a process nothing owns and nothing will stop.
+        let visible = RecordingVisibleLauncher()
+        visible.lightweight = true
+        let (bridge, background) = host(visible: visible)
+        let session = bridge.handle(.start(.init(requestID: "r1", cwd: scratch))).session!
+        #expect(bridge.handle(.openTerminal(sessionID: session.sessionID, terminal: "ghostty",
+                                            authorization: approval)).ok)
+
+        bridge.stopAll()
+        background.fireExit(session.sessionID)
+
+        #expect(!waitUntil(0.4) { !visible.resumes.isEmpty },
+                "no terminal is opened by a host that is quitting")
+        #expect(!bridge.hasRunningClients)
+    }
+
+    @Test("A prompt sent while the hand-over is in flight is refused, not written to a dying client")
+    func aSendDuringTheHandoverIsRefused() {
+        // The defect this catches: a hand-over deliberately does not set `stopRequested`, and the
+        // handle survives until the exit is confirmed — so every guard `handleSend` had still
+        // passed. The prompt went to a client already told to go, and because the message id is
+        // recorded before the write, the obvious retry came back ok having sent nothing.
+        let visible = RecordingVisibleLauncher()
+        visible.lightweight = true
+        let (bridge, background) = host(visible: visible)
+        let session = bridge.handle(.start(.init(requestID: "r1", cwd: scratch))).session!
+        #expect(bridge.handle(.openTerminal(sessionID: session.sessionID, terminal: "ghostty",
+                                            authorization: approval)).ok)
+
+        let refused = bridge.handle(.send(.init(sessionID: session.sessionID, messageID: "m1",
+                                                prompt: "hello", authorization: approval)))
+        #expect(!refused.ok)
+        #expect(refused.error?.code == .busy)
+        #expect(background.handle(session.sessionID)?.writtenLines.isEmpty == true)
+
+        // The refusal spent nothing: no turn was recorded, so the id is still the caller's to use
+        // once the tab is there. A refusal that had burned it would answer a later retry `ok` with
+        // nothing sent.
+        let after = bridge.handle(.status(sessionID: session.sessionID)).session
+        #expect(after?.messages.isEmpty == true)
+        #expect(after?.phase == .handingOver)
+
+        background.fireExit(session.sessionID)
+        #expect(waitUntil { !visible.resumes.isEmpty })
+        _ = bridge.handle(.stop(sessionID: session.sessionID))
+    }
+
+    @Test("A stop asked for mid-hand-over wins, and no terminal is opened to be closed again")
+    func aStopBeatsAHandoverInFlight() {
+        // The defect this catches: the stop set `stopRequested` but left the hand-over armed, so
+        // the exit it caused was read as the hand-over's cue — a tab opened and was torn down in
+        // front of the person who had just asked for the session to end.
+        let visible = RecordingVisibleLauncher()
+        visible.lightweight = true
+        let (bridge, background) = host(visible: visible)
+        let session = bridge.handle(.start(.init(requestID: "r1", cwd: scratch))).session!
+        #expect(bridge.handle(.openTerminal(sessionID: session.sessionID, terminal: "ghostty",
+                                            authorization: approval)).ok)
+
+        _ = bridge.handle(.stop(sessionID: session.sessionID))
+        background.fireExit(session.sessionID)
+
+        #expect(!waitUntil(0.4) { !visible.resumes.isEmpty })
+        #expect(bridge.handle(.status(sessionID: session.sessionID)).session?.phase == .stopped)
+    }
+
+    @Test("A resume in flight counts as a running client, so the host cannot exit out from under it")
+    func aResumeInFlightKeepsTheHostAlive() {
+        // The defect this catches: the session still carried the *old* client's exit status while
+        // the new one was being started, and `hasRunningClients` treats an exit status as the end
+        // of the argument. aa-bridge's shutdown loop polls exactly that and calls exit() the moment
+        // it goes false — with a Ghostty tab and a fresh client mid-creation, owned by nobody.
+        let visible = RecordingVisibleLauncher()
+        visible.lightweight = true
+        let reached = DispatchSemaphore(value: 0)
+        let release = DispatchSemaphore(value: 0)
+        visible.beforeResume = { reached.signal(); _ = release.wait(timeout: .now() + 5) }
+        let (bridge, background) = host(visible: visible)
+        let session = bridge.handle(.start(.init(requestID: "r1", cwd: scratch))).session!
+        #expect(bridge.handle(.openTerminal(sessionID: session.sessionID, terminal: "ghostty",
+                                            authorization: approval)).ok)
+
+        background.fireExit(session.sessionID)
+        #expect(reached.wait(timeout: .now() + 5) == .success)
+        #expect(bridge.hasRunningClients, "a client is being started right now")
+        release.signal()
+
+        #expect(waitUntil { !visible.resumes.isEmpty })
+        _ = bridge.handle(.stop(sessionID: session.sessionID))
+    }
+
+    @Test("A session this host does not own is refused")
+    func unownedIsRefused() {
+        let (bridge, _) = host(visible: RecordingVisibleLauncher())
+        let refused = bridge.handle(.openTerminal(sessionID: "nobodys-session", terminal: "ghostty",
+                                            authorization: approval))
+        #expect(!refused.ok)
+        #expect(refused.error?.code == .notOwned)
+    }
+
+    @Test("A terminal nobody supports is refused before the client is stopped")
+    func unknownTerminalsAreRefused() {
+        let visible = RecordingVisibleLauncher()
+        visible.lightweight = true
+        let (bridge, background) = host(visible: visible)
+        let session = bridge.handle(.start(.init(requestID: "r1", cwd: scratch))).session!
+
+        let refused = bridge.handle(.openTerminal(sessionID: session.sessionID, terminal: "tmux", authorization: approval))
+        #expect(!refused.ok)
+        #expect(background.handle(session.sessionID)?.terminated == false)
+        #expect(visible.resumes.isEmpty)
+    }
+
+    @Test("A resume that fails leaves a stopped session that says why, not a silent one")
+    func aFailedResumeIsExplained() {
+        let visible = RecordingVisibleLauncher()
+        visible.lightweight = true
+        let (bridge, background) = host(visible: visible)
+        let session = bridge.handle(.start(.init(requestID: "r1", cwd: scratch))).session!
+        #expect(bridge.handle(.openTerminal(sessionID: session.sessionID,
+                                            terminal: "ghostty", authorization: approval)).ok)
+
+        visible.failure = VisibleSessionError.surface(.permissionDenied)
+        background.fireExit(session.sessionID)
+        #expect(waitUntil { bridge.handle(.status(sessionID: session.sessionID))
+                                  .session?.phase == .failed })
+
+        let after = bridge.handle(.status(sessionID: session.sessionID)).session
+        #expect(after?.phase == .failed, "the hand-over failed; the session must not look stopped")
+        #expect(after?.surface == nil)
+        #expect(!bridge.hasRunningClients, "nothing is left running after a hand-over that failed")
     }
 }

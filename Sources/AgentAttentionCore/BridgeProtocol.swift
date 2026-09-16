@@ -72,6 +72,14 @@ public enum BridgeRequest: Codable, Sendable, Equatable {
     case summary(sessionID: String)
     /// Take over a session the user started in a terminal, in explicit steps. See `AdoptRequest`.
     case adopt(AdoptRequest)
+    /// Give a session that started headless a terminal of its own.
+    ///
+    /// A hand-over, not a second view. A running client's pipes belong to this host and a process
+    /// cannot be moved onto a tab's pty afterwards; two clients on one transcript is a state
+    /// `foreignWriterRefusal` already refuses. So the client is stopped and the **same**
+    /// conversation is reopened in a new surface, once the first is confirmed gone.
+    case openTerminal(sessionID: String, terminal: String?,
+                      authorization: BridgeAuthorization?)
 
     public struct StartRequest: Codable, Sendable, Equatable {
         /// Caller-chosen id, so a retry cannot start two sessions. Reusing it with *different*
@@ -415,6 +423,10 @@ public enum BridgeSessionPhase: String, Codable, Sendable, Equatable {
     /// The process this host started is **confirmed gone** after a stop. Only an observed exit —
     /// never our own intent — turns `stopping` into this.
     case stopped
+    /// A terminal was asked for a session that had none. The client has been told to stop, and the
+    /// new surface opens only once that exit is confirmed — distinct from `stopping`, which ends at
+    /// `stopped` and means the session is over.
+    case handingOver
 }
 
 public struct BridgeSessionState: Codable, Sendable, Equatable {

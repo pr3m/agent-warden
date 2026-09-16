@@ -7,7 +7,8 @@ import Foundation
 /// log — holds for a voice assistant exactly as it does for the command line. Nothing here keeps
 /// state between calls, and nothing here can reach a session the host would refuse.
 ///
-/// The three tools that change a session — send, adopt, stop — take an `authorization` object and
+/// The four tools that change a session — send, adopt, stop, open-terminal — take an `authorization`
+/// object and
 /// are annotated destructive, so a client that asks its user before such calls will ask here. The
 /// statement is the user's approval in their own words, and it is what the audit log records.
 public final class MCPServer: @unchecked Sendable {
@@ -68,7 +69,8 @@ public final class MCPServer: @unchecked Sendable {
     static let instructions = """
     Agent Warden watches the user's local Claude Code sessions and owns the ones it started or \
     adopted. Read tools are safe to call at any time. warden_send_prompt, warden_adopt_session and \
-    warden_stop_session change a session: call them only after the user has explicitly approved that \
+    warden_stop_session and warden_open_session_terminal change a session: call them only after the \
+    user has explicitly approved that \
     specific action, and pass their approval, in their words, as authorization.statement. Sessions \
     the user runs in a terminal are observed, never written to; adopting one resumes its \
     conversation under Warden only after the terminal's own client has exited.
@@ -124,6 +126,12 @@ public final class MCPServer: @unchecked Sendable {
          "description": "Bring a session's own terminal tab to the front: the tab Warden opened, or the tab the user linked. Exact tab or nothing.",
          "inputSchema": object(["sessionId": sessionID], required: ["sessionId"]),
          "annotations": annotations(readOnly: false)],
+        ["name": "warden_open_session_terminal",
+         "description": "Give a session that started without a terminal one of its own. The client is stopped and the same conversation reopens in a Ghostty tab once it has gone, so a session still working on a turn is refused.",
+         "inputSchema": object(["sessionId": sessionID, "authorization": authorization,
+                                "terminal": ["type": "string", "enum": ["ghostty"]]],
+                               required: ["sessionId", "authorization"]),
+         "annotations": annotations(readOnly: false, destructive: true)],
         ["name": "warden_start_session",
          "description": "Start a new Claude Code session Warden owns, in an approved project directory. Retrying with the same requestId returns the same session.",
          "inputSchema": object(["requestId": ["type": "string"], "cwd": ["type": "string"],
@@ -204,6 +212,10 @@ public final class MCPServer: @unchecked Sendable {
         case "warden_focus_session":
             guard let id = string("sessionId") else { return missing("sessionId") }
             return render(transport(.focus(sessionID: id)))
+        case "warden_open_session_terminal":
+            guard let id = string("sessionId") else { return missing("sessionId") }
+            return render(transport(.openTerminal(sessionID: id, terminal: string("terminal"),
+                                                  authorization: authorization)))
         case "warden_start_session":
             guard let request = string("requestId") else { return missing("requestId") }
             guard let cwd = string("cwd") else { return missing("cwd") }

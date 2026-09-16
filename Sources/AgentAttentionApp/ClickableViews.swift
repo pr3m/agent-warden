@@ -390,6 +390,8 @@ final class ClosureButton: NSButton, CursorHosting {
     var contextHandler: ((AgentAttentionCore.SessionIdentity) -> Void)?
     /// Set when this button's menu carries a pairing item.
     var linkHandler: ((AgentAttentionCore.SessionIdentity) -> Void)?
+    /// Set when this button's menu offers to hand a headless session a terminal.
+    var openTerminalHandler: ((AgentAttentionCore.SessionIdentity) -> Void)?
     /// Set when this button's menu carries a snooze item.
     var itemHandler: ((AgentAttentionCore.AttentionItem) -> Void)?
     /// Set when this button's menu carries a dismiss item.
