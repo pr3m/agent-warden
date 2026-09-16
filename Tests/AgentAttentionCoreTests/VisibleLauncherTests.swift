@@ -86,6 +86,37 @@ struct VisibleLauncherTests {
         }
     }
 
+    @Test("A data directory with a space in its path still opens a visible session")
+    func aSpacedDataDirectoryStillLaunches() throws {
+        // The default data directory is under `Application Support`. That space alone refused
+        // every visible session on a default install, and no test noticed: all their roots were
+        // plain.
+        let surfaces = FakeSurfaces()
+        let scratch = scratch(); defer { try? FileManager.default.removeItem(at: scratch) }
+        let root = scratch.appendingPathComponent("Application Support/AgentAttention")
+        let temporary = scratch.appendingPathComponent("user-temporary")
+        let handle = try VisibleClaudeLauncher(surfaces: surfaces, root: root,
+                                               claudeExecutable: "/usr/bin/true",
+                                               relayExecutable: "/usr/bin/true",
+                                               userTemporary: temporary)
+            .launch(sessionID: "S-1", cwd: scratch.path, model: nil, onLine: { _ in },
+                    onExit: { _ in })
+        defer { handle.terminate() }
+
+        let plan = try #require(surfaces.created.first)
+        #expect(plan.inbox.hasPrefix(temporary.path + "/"))
+        #expect(plan.outbox.hasPrefix(temporary.path + "/"))
+    }
+
+    @Test("A data directory that is already a plain path keeps the pipes")
+    func aPlainDataDirectoryKeepsThePipes() {
+        let channels = VisibleClaudeLauncher.channelDirectory(
+            root: URL(fileURLWithPath: "/tmp/home"),
+            userTemporary: URL(fileURLWithPath: "/tmp/elsewhere"))
+        #expect(channels.path == "/tmp/home/visible",
+                "a sandboxed data directory keeps its session traffic inside the sandbox")
+    }
+
     @Test("A surface that could not be created is a launch failure, not a silent success",
           arguments: [GhosttySurfaceFailure.notInstalled, .permissionDenied, .scriptingFailed,
                       .surfaceGone])

@@ -76,7 +76,7 @@ public enum VisibleSessionError: Error, LocalizedError {
 ///
 /// Two private channels carry the protocol. Warden writes stream-json into the inbox; the relay
 /// reads it, feeds Claude, renders the conversation into the tab, and copies the raw frames back
-/// out through the outbox. Both live in this host's own 0700 directory and are created 0600: a
+/// out through the outbox. Both live in a 0700 directory of this user's and are created 0600: a
 /// session's prompts and replies are not for other local processes to read.
 ///
 /// **Typing in that tab is not enabled.** Claude's standard input is the inbox, so keystrokes have
@@ -87,14 +87,41 @@ public final class VisibleClaudeLauncher: BridgeClientLaunching {
     private let claudeExecutable: String
     private let relayExecutable: String
     private let withoutTools: Bool
+    private let userTemporary: URL?
 
     public init(surfaces: GhosttySurfaceCreating, root: URL, claudeExecutable: String,
-                relayExecutable: String, withoutTools: Bool = false) {
+                relayExecutable: String, withoutTools: Bool = false,
+                userTemporary: URL? = VisibleClaudeLauncher.userTemporaryDirectory) {
         self.surfaces = surfaces
         self.root = root
         self.claudeExecutable = claudeExecutable
         self.relayExecutable = relayExecutable
         self.withoutTools = withoutTools
+        self.userTemporary = userTemporary
+    }
+
+    /// Where the two pipes are made: under the data directory when its path can go in a terminal
+    /// command, otherwise under the temporary directory macOS keeps for this user alone.
+    ///
+    /// The default data directory is `~/Library/Application Support/AgentAttention`, and that one
+    /// space was enough for `VisibleSessionPlan` to refuse the pipe paths — every visible session on
+    /// a default install failed with "not a plain path" before a terminal was touched.
+    static func channelDirectory(root: URL, userTemporary: URL?) -> URL {
+        let preferred = root.appendingPathComponent("visible", isDirectory: true)
+        guard !VisibleSessionPlan.isPlainPath(preferred.path), let userTemporary else {
+            return preferred
+        }
+        return userTemporary.appendingPathComponent("AgentAttention-visible", isDirectory: true)
+    }
+
+    /// Asked of the system rather than read from `$TMPDIR`, which is whatever the launching process
+    /// said. This one macOS created for this user, and nobody else can list or write it.
+    public static var userTemporaryDirectory: URL? {
+        let length = confstr(_CS_DARWIN_USER_TEMP_DIR, nil, 0)
+        guard length > 0 else { return nil }
+        var buffer = [CChar](repeating: 0, count: length)
+        guard confstr(_CS_DARWIN_USER_TEMP_DIR, &buffer, length) > 0 else { return nil }
+        return URL(fileURLWithPath: String(cString: buffer), isDirectory: true)
     }
 
     public func launch(sessionID: String, cwd: String, model: String?,
@@ -128,7 +155,7 @@ public final class VisibleClaudeLauncher: BridgeClientLaunching {
             }
         }
 
-        let channels = root.appendingPathComponent("visible", isDirectory: true)
+        let channels = VisibleClaudeLauncher.channelDirectory(root: root, userTemporary: userTemporary)
         try? FileManager.default.createDirectory(at: channels, withIntermediateDirectories: true,
                                                  attributes: [.posixPermissions: 0o700])
         let inbox = channels.appendingPathComponent("\(sessionID).in").path

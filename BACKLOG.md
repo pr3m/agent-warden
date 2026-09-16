@@ -160,6 +160,15 @@ a real disposable session.
   ever becomes its only powerful tool — if that day comes, `BridgeService` already holds the
   control socket and `focusForBridge` shows the pattern. The audit log earns its keep either way:
   not as a barrier, but as the way to reconstruct what happened.
+- **A visible session refuses a project path with a space in it.** The tab's command is run by a
+  shell and `VisibleSessionPlan` validates rather than quotes, so `~/Code/My App` fails with "not
+  a plain path" before a terminal opens. The pipes no longer hit this — they move to the per-user
+  temporary directory when the data directory has a space — but a project path cannot move.
+  Background sessions are unaffected. Fixing it means quoting, or carrying paths in the surface's
+  environment instead of its command line.
+- **`Scripts/smoke-test.sh` needs GNU `timeout`**, which stock macOS lacks. Where
+  `/opt/homebrew/bin` is not on `PATH` — a session Warden starts in the background, for one — the
+  named-pipe contract check fails with empty output though the product answers correctly.
 - **`warden_start_session` is annotated destructive but takes no `authorization`.** Nothing about
   spawning a client in an approved root is the user's word to give, so there is no statement to
   record — but it means the audit log has no vouching line for starts, unlike send/adopt/stop.
