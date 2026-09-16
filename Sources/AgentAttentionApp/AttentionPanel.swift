@@ -88,6 +88,11 @@ final class AttentionPanelController {
     var onShowContext: ((SessionIdentity) -> Void)?
     /// Explicit request to link this session to a Ghostty tab.
     var onLinkTerminal: ((SessionIdentity) -> Void)?
+    /// Explicit request to give a session running without a terminal one of its own.
+    var onOpenTerminal: ((SessionIdentity) -> Void)?
+    /// Whether that request applies to this session at all. Answered from a cache the delegate
+    /// keeps, because the real answer lives in the session host and a menu must not wait on a socket.
+    var canOpenTerminal: ((String) -> Bool)?
     /// Looks up the confirmed link for a session, so Details can describe it.
     var pairingLookup: ((String) -> TerminalPairing?)?
 
@@ -973,6 +978,19 @@ final class AttentionPanelController {
             button.contextHandler = { [weak self] in self?.onShowContext?($0) }
             menu.addItem(context)
 
+            // Only for a session the host owns and that has no terminal yet. Everything else either
+            // already has a tab to focus or is not ours to stop.
+            if self.canOpenTerminal?(identity.sessionID) == true, self.onOpenTerminal != nil {
+                let open = NSMenuItem(title: "Open in Ghostty tab",
+                                      action: #selector(ClosureButton.fireMenuOpenTerminal(_:)), keyEquivalent: "")
+                open.target = button
+                open.representedObject = identity
+                open.toolTip = "Stops this session's background client and reopens the same "
+                             + "conversation in a Ghostty tab."
+                button.openTerminalHandler = { [weak self] in self?.onOpenTerminal?($0) }
+                menu.addItem(open)
+            }
+
             if TerminalTarget.normalizedTermProgram(identity) == "ghostty", self.onLinkTerminal != nil {
                 let link = NSMenuItem(title: pairing == nil ? "Link Ghostty tab…" : "Change or remove linked tab…",
                                       action: #selector(ClosureButton.fireMenuLink(_:)), keyEquivalent: "")
@@ -1336,6 +1354,11 @@ extension ClosureButton {
     @objc func fireMenuLink(_ sender: NSMenuItem) {
         guard let identity = sender.representedObject as? SessionIdentity else { return }
         linkHandler?(identity)
+    }
+
+    @objc func fireMenuOpenTerminal(_ sender: NSMenuItem) {
+        guard let identity = sender.representedObject as? SessionIdentity else { return }
+        openTerminalHandler?(identity)
     }
 
     @objc func fireMenuContext(_ sender: NSMenuItem) {

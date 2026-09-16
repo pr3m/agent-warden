@@ -164,6 +164,15 @@ public final class BridgeHost: @unchecked Sendable {
         var lastRelevantActivityAt: Date?
         var launching = false
         var stopRequested = false
+        /// What this session was started on, kept because `BridgeSessionState` does not carry it and
+        /// a hand-over that forgot it would reopen the conversation on a different model.
+        var model: String?
+        /// A terminal was asked for while this client was still up.
+        ///
+        /// Set when the stop is requested and read on the exit that follows — the only moment a
+        /// resume can start without putting a second writer on the same transcript. Kept apart from
+        /// `stopRequested` because this stop is a step in continuing the session, not the end of it.
+        var handingOverTo: String?
         /// Background jobs this session has told us about. A third account, kept apart from the
         /// turn's phase and from the messages: a task finishing is not a turn finishing.
         var jobs = BackgroundRegistry()
@@ -200,6 +209,9 @@ public final class BridgeHost: @unchecked Sendable {
             response = context(sessionID: sessionID, maxMessages: maxMessages)
         case .summary(let sessionID): response = summary(sessionID: sessionID)
         case .adopt(let adopt): response = handleAdopt(adopt)
+        case .openTerminal(let sessionID, let terminal, let authorization):
+            response = handleOpenTerminal(sessionID, terminal: terminal,
+                                          authorization: authorization)
         }
         // After the fact, from the request and the answer together, so the log says what was
         // asked, who vouched for it, and what actually happened — including every refusal.
@@ -256,6 +268,7 @@ public final class BridgeHost: @unchecked Sendable {
         let session = Session(state: BridgeSessionState(
             sessionID: sessionID, cwd: cwd, phase: .accepted, startedAt: now()))
         session.launching = true
+        session.model = request.model
         sessions[sessionID] = session
         startRequests[request.requestID] = (request.intentFingerprint, sessionID)
         lock.unlock()
@@ -396,6 +409,15 @@ public final class BridgeHost: @unchecked Sendable {
             return refusal(.clientUnavailable, session.stopRequested
                 ? "That session was stopped; nothing more will be sent to it."
                 : "That session's client has already gone.")
+        }
+        // A hand-over is not a stop, so none of the guards above catch it: `stopRequested` is false
+        // and the handle is still there — while being a client that has already been told to go.
+        // Writing here would burn the message id on a prompt nobody will ever read.
+        guard session.handingOverTo == nil else {
+            defer { lock.unlock() }
+            return refusal(.busy,
+                           "This session is moving to a terminal of its own. Send to it once its "
+                         + "tab has opened.")
         }
 
         let fingerprint = BridgeHost.fingerprint(request.prompt)
@@ -571,6 +593,11 @@ public final class BridgeHost: @unchecked Sendable {
     /// pool, which a busy process can exhaust — a stop has to happen, not wait for a free thread.
     static let terminations = DispatchQueue(label: "ai.wundamental.agent-warden.bridge.terminate")
 
+    /// Where a hand-over's resume runs. Deliberately **not** `terminations`: opening a surface talks
+    /// to a terminal and creates the relay's pipes, either of which can block, and a stop queued
+    /// behind that would wait for a terminal — the exact starvation `terminations` exists to avoid.
+    static let handovers = DispatchQueue(label: "ai.wundamental.agent-warden.bridge.handover")
+
     /// How long a reading stays a claim about now. Stated by the host so a caller does not have to
     /// know it — the whole point of reporting `stale` rather than only a timestamp.
     public static let freshnessWindow: TimeInterval = 30 * 60
@@ -699,6 +726,10 @@ public final class BridgeHost: @unchecked Sendable {
             return BridgeResponse(ok: true, session: session.state)
         }
         session.stopRequested = true
+        // A stop beats a hand-over in flight. Left set, the exit this stop causes would be read as
+        // the hand-over's cue: a terminal would open, a client would start in it, and both would be
+        // torn down again in front of the person who asked for the session to end.
+        session.handingOverTo = nil
         session.inFlight = nil                    // stopping resolves the turn: nothing is owed now
         let handle = session.handle               // kept: only a confirmed exit releases it
         // Two different claims, kept apart. With a client still held, all that has happened is that
@@ -716,12 +747,184 @@ public final class BridgeHost: @unchecked Sendable {
         return BridgeResponse(ok: true, session: snapshot)
     }
 
+    /// Give a session that started headless a terminal of its own.
+    ///
+    /// Every refusal here happens **before** the client is touched. A hand-over that cannot finish
+    /// must leave the session exactly as it found it: the one failure mode worth designing against
+    /// is stopping somebody's working session and then discovering there is nowhere to put it.
+    func handleOpenTerminal(_ sessionID: String, terminal: String?,
+                            authorization: BridgeAuthorization?) -> BridgeResponse {
+        // Vouched for, like a stop: this ends a client the caller did not necessarily start, and an
+        // agent on the other end of MCP must not be able to do that on the user's behalf unasked.
+        guard authorization?.isUsable == true else {
+            return refusal(.authorizationRequired,
+                           "Handing a session a terminal stops its client, so it needs an "
+                         + "authorization: a confirmed statement that a person asked for it.")
+        }
+        let wanted = terminal ?? "ghostty"
+        guard wanted == "ghostty" else {
+            return refusal(.malformed,
+                           "\(wanted) is not a terminal this host can open. Supported: ghostty.")
+        }
+        guard let visible = visibleLauncher else {
+            return refusal(.clientUnavailable,
+                           "This host cannot open visible sessions, so session \(sessionID) was "
+                         + "left as it was. Run it on macOS with Ghostty installed.")
+        }
+
+        lock.lock()
+        guard let session = sessions[sessionID] else {
+            lock.unlock()
+            return refusal(.notOwned,
+                           "This host did not start session \(sessionID), so it has no client to "
+                         + "hand over. A session opened in a terminal already has one.")
+        }
+        defer { lock.unlock() }
+
+        guard session.state.surface == nil else {
+            return refusal(.malformed,
+                           "Session \(sessionID) already has a terminal of its own. Focus it "
+                         + "rather than opening a second one.")
+        }
+        guard !session.stopRequested, session.state.exitStatus == nil, session.handle != nil else {
+            return refusal(.clientUnavailable,
+                           "Session \(sessionID) has no running client to hand over.")
+        }
+        guard session.handingOverTo == nil else {
+            return BridgeResponse(ok: true, session: published(session))   // asked already
+        }
+        // The same guard a send gets, and for the same reason: a turn in flight is an answer this
+        // host has not seen yet, and a hand-over restarts the process that owes it.
+        if let inFlight = session.inFlight {
+            return refusal(.busy,
+                           "This session is still working on message \(inFlight.messageID). "
+                         + "Hand it a terminal once that turn has finished.")
+        }
+        // Refused here rather than after the client is gone: the cwd is the one part of the plan
+        // that cannot be relocated the way the channel pipes were.
+        guard VisibleSessionPlan.isPlainPath(session.state.cwd) else {
+            return refusal(.malformed,
+                           "Session \(sessionID) runs in \(session.state.cwd), which is not a path "
+                         + "this host will put in a terminal command, so it was left as it was.")
+        }
+        _ = visible                                  // held only to prove support before stopping
+
+        session.handingOverTo = wanted
+        session.state.phase = .handingOver
+        append(.note, to: session,
+               text: "terminal requested; stopping the client and reopening this conversation once "
+                   + "it is confirmed gone")
+        let snapshot = published(session)
+        let handle = session.handle
+        BridgeHost.terminations.async { handle?.terminate() }
+        return BridgeResponse(ok: true, session: snapshot)
+    }
+
+    /// The second half of a hand-over, reached only from a confirmed exit.
+    ///
+    /// Called with the lock held and the old handle already released, so the resume itself is
+    /// dispatched rather than run here: creating a surface talks to Ghostty over Apple events, and
+    /// holding this lock across that would block every status request behind a terminal.
+    private func completeHandover(_ session: Session, sessionID: String) {
+        guard let visible = visibleLauncher else { return }
+        let cwd = session.state.cwd
+        let model = session.model
+        let departed = session.state.exitStatus
+        session.handingOverTo = nil
+        session.launching = true
+        // The old client's exit is not this session's end — a new one is being started under the
+        // same conversation — so the state has to read the way any launch reads: starting, not
+        // finished. `hasRunningClients` settles on `exitStatus` before it looks at `launching`, and
+        // a stale one left here let the host's shutdown loop decide nothing was running and call
+        // `exit` while this resume was still creating a terminal, orphaning the tab and the client
+        // in it. Put back below if the resume fails.
+        session.state.exitStatus = nil
+        append(.note, to: session, text: "client gone; reopening this conversation in a terminal")
+
+        BridgeHost.handovers.async { [weak self] in
+            guard let self else { return }
+            do {
+                let handle = try visible.resume(
+                    sessionID: sessionID, cwd: cwd, model: model,
+                    onLine: { [weak self] line in self?.receive(line, for: sessionID) },
+                    onExit: { [weak self] status in self?.clientExited(sessionID, status: status) })
+                // Checked after the surface exists, because that is the first moment it can be:
+                // a shutdown racing an exit can ask for a stop while the resume is already in
+                // flight, and a terminal opened then would outlive the host.
+                self.lock.lock()
+                let unwanted = self.sessions[sessionID]
+                if let session = unwanted, session.stopRequested {
+                    session.launching = false
+                    session.state.exitStatus = departed
+                }
+                let abandon = unwanted == nil || unwanted?.stopRequested == true
+                self.lock.unlock()
+                guard !abandon else {
+                    handle.terminate()   // nobody to give it to, and terminating can block: no lock
+                    return
+                }
+                self.lock.lock()
+                defer { self.lock.unlock() }
+                guard let session = self.sessions[sessionID] else { return }
+                session.launching = false
+                session.handle = handle
+                session.state.pid = handle.pid
+                session.state.exitStatus = nil       // a live client again, not a stopped session
+                session.state.phase = .active
+                if let visibleHandle = handle as? VisibleClaudeHandle {
+                    session.state.surface = BridgeSurfaceState(
+                        terminal: "ghostty",
+                        windowID: visibleHandle.surface.windowID,
+                        tabID: visibleHandle.surface.tabID,
+                        terminalID: visibleHandle.surface.terminalID,
+                        open: visibleHandle.isRunning)
+                }
+                self.append(.note, to: session,
+                            text: "this conversation is now in a Ghostty tab")
+                self.recordHandover(sessionID: sessionID, ok: true, phase: session.state.phase,
+                                    error: nil)
+            } catch {
+                self.lock.lock()
+                defer { self.lock.unlock() }
+                guard let session = self.sessions[sessionID] else { return }
+                session.launching = false
+                session.state.exitStatus = departed   // it really did go, and nothing replaced it
+                session.state.phase = .failed
+                // Said plainly, because the client really is gone: a hand-over that fails costs the
+                // session, and a caller that is told "stopped" would not know to restart it.
+                self.append(.error, to: session,
+                            text: "the terminal could not be opened, and the client that was "
+                                + "stopped for it is gone: \(error.localizedDescription)")
+                self.recordHandover(sessionID: sessionID, ok: false, phase: session.state.phase,
+                                    error: "clientUnavailable")
+            }
+        }
+    }
+
+    /// How a hand-over actually ended.
+    ///
+    /// The only outcome here that lands **after** its response: everything else this log records is
+    /// settled by the time the caller is answered. Without this the log could say a hand-over was
+    /// asked for and vouched for, but not whether the session came back — which is the one question
+    /// it exists to answer when a client the user was watching disappears.
+    private func recordHandover(sessionID: String, ok: Bool, phase: BridgeSessionPhase,
+                                error: String?) {
+        audit?.append(BridgeAuditEntry(at: now(), operation: "openTerminal.completed",
+                                       sessionID: sessionID, key: nil, promptFingerprint: nil,
+                                       authorized: true, statement: nil, via: nil, ok: ok,
+                                       error: error, outcome: phase.rawValue))
+    }
+
     /// Stop everything this host started. Used on shutdown; touches nothing else.
     public func stopAll() {
         lock.lock()
         var handles: [BridgeClientHandle] = []
         for session in sessions.values {
             session.stopRequested = true
+            // Abandoned deliberately. A hand-over finishes on the exit that follows a terminate, and
+            // the terminate below is a shutdown — completing it would open a terminal and start a
+            // client as this host goes, leaving a process that nothing owns and nothing will stop.
+            session.handingOverTo = nil
             // The handle is **kept** until the process confirms it has gone. Dropping it here made
             // `hasRunningClients` false immediately, so the host could exit while a child was still
             // alive and a delayed kill never arrived.
@@ -1192,6 +1395,12 @@ public final class BridgeHost: @unchecked Sendable {
            let index = session.state.messages.lastIndex(where: { $0.messageID == inFlight.messageID }) {
             session.state.messages[index].phase = status == 0 ? .uncertain : .failed
             session.inFlight = nil
+        }
+        // What a hand-over has been waiting for: the old client is confirmed gone, so the same
+        // conversation can be reopened in a terminal having never had two writers on it.
+        if session.handingOverTo != nil {
+            completeHandover(session, sessionID: sessionID)
+            return
         }
         switch session.state.phase {
         case .stopping:

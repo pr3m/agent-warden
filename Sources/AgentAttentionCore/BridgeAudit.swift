@@ -6,7 +6,8 @@ import Foundation
 /// digest, which is enough to tell two sends apart and to match a retry, and is not the prompt.
 public struct BridgeAuditEntry: Codable, Sendable, Equatable {
     public var at: Date
-    /// `start`, `send`, `stop`, `focus`, `adopt.prepare`, `adopt.complete`, `adopt.cancel`.
+    /// `start`, `send`, `stop`, `focus`, `openTerminal`, `adopt.prepare`, `adopt.complete`,
+    /// `adopt.cancel`.
     public var operation: String
     public var sessionID: String?
     /// The caller's idempotency key: request id or message id.
@@ -57,6 +58,13 @@ public extension BridgeAuditRecording {
         case .focus(let sessionID):
             entry.operation = "focus"
             entry.sessionID = sessionID
+        case .openTerminal(let sessionID, let terminal, let authorization):
+            // Recorded because it ends a process the user may be watching, even though it is the
+            // same conversation that comes back.
+            entry.operation = "openTerminal"
+            entry.sessionID = sessionID
+            _ = terminal            // always "ghostty"; `key` is for a caller's idempotency key
+            vouch(authorization)
         case .adopt(let adopt):
             entry.operation = "adopt." + adopt.action.rawValue
             entry.sessionID = adopt.sessionID

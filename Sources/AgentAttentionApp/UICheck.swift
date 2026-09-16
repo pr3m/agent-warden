@@ -1781,6 +1781,24 @@ enum UICheck {
         check("an unlinked Ghostty row opens the conversation instead of guessing a tab",
               panel.debugRowTooltips[ghosttyRow].contains("recent conversation"))
 
+        // The hand-over item exists only for a session the host owns and that has no terminal yet.
+        // A session already in a tab has one to focus; a session nobody owns is not ours to stop.
+        check("no row offers a terminal to a session the host does not own",
+              !(panel.debugRowMenu(index: ghosttyRow)?.items.map(\.title) ?? [])
+                  .contains("Open in Ghostty tab"))
+        var handedOver: [String] = []
+        panel.canOpenTerminal = { _ in true }
+        panel.onOpenTerminal = { handedOver.append($0.sessionID) }
+        panel.render(items: items, sessions: sessions, snoozedCount: 2, maxVisible: 4, now: now, anchor: bubble.frame)
+        check("a headless session the host owns is offered one",
+              (panel.debugRowMenu(index: ghosttyRow)?.items.map(\.title) ?? [])
+                  .contains("Open in Ghostty tab"))
+        check("and choosing it asks, rather than opening a terminal from the panel itself",
+              handedOver.isEmpty && activated == nil)
+        panel.canOpenTerminal = nil
+        panel.onOpenTerminal = nil
+        panel.render(items: items, sessions: sessions, snoozedCount: 2, maxVisible: 4, now: now, anchor: bubble.frame)
+
         var unlinkedOpens: [String] = []
         panel.onShowContext = { unlinkedOpens.append($0.sessionID) }
         panel.debugClickRow(index: ghosttyRow)

@@ -60,6 +60,53 @@ final class BridgeService {
 
     var hostState: BridgeSupervisor.State? { supervisor?.state }
 
+    /// Sessions the host owns that are running without a terminal of their own.
+    ///
+    /// Cached rather than asked for when a menu opens: the answer comes over a socket, and a menu
+    /// that blocks the main thread on one is a menu that hangs whenever the host is busy. An empty
+    /// set — no host, a failed query, a host that owns nothing — simply means no row offers the
+    /// action, which is the honest answer when we do not know.
+    private(set) var sessionsWithoutTerminals: Set<String> = []
+
+    /// Asked off the main thread on the app's own refresh cadence. Never inside a menu build.
+    func refreshSessionsWithoutTerminals() {
+        // No host, nothing to ask. The bridge is off by default, and connecting every sweep to a
+        // socket that was never served is work with no possible answer.
+        guard supervisor != nil else {
+            sessionsWithoutTerminals = []
+            return
+        }
+        let socket = paths.bridgeSocket.path
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            // Nine, not three: the client sets its per-read timeout to a third of this, and one
+            // quiet second would empty the cache and take the menu item away with it.
+            let response = try? BridgeSocketClient.send(.sessions, to: socket, timeout: 9)
+            let candidates = Set((response?.sessions ?? [])
+                .filter { $0.surface == nil && $0.exitStatus == nil }
+                .map(\.sessionID))
+            DispatchQueue.main.async { self?.sessionsWithoutTerminals = candidates }
+        }
+    }
+
+    /// Ask the host to hand a session a terminal. The outcome comes back on the main thread.
+    func openTerminal(sessionID: String, completion: @escaping (BridgeResponse) -> Void) {
+        let socket = paths.bridgeSocket.path
+        DispatchQueue.global(qos: .userInitiated).async {
+            // The user pressed the item, and that is what the audit log records.
+            let approval = BridgeAuthorization(
+                confirmed: true,
+                statement: "opened this session in a Ghostty tab from the Agent Warden panel",
+                via: "app")
+            let response = (try? BridgeSocketClient.send(
+                .openTerminal(sessionID: sessionID, terminal: "ghostty", authorization: approval),
+                to: socket, timeout: 15))
+                ?? BridgeResponse(ok: false, error: BridgeError(
+                    code: .clientUnavailable,
+                    message: "The session host did not answer, so nothing was changed."))
+            DispatchQueue.main.async { completion(response) }
+        }
+    }
+
     private func startControlEndpoint() {
         let server = BridgeSocketServer(path: paths.appControlSocket.path) { [weak self] request in
             guard case .focus(let sessionID) = request else {

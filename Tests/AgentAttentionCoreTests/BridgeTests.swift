@@ -9,6 +9,9 @@ final class FakeLauncher: BridgeClientLaunching, @unchecked Sendable {
     private(set) var launched: [(sessionID: String, cwd: String, model: String?)] = []
     private(set) var handles: [String: FakeHandle] = [:]
     var failNextLaunch: String?
+    /// Kept so a test can end a client the way a real one ends: by the host being told, rather than
+    /// by a flag flipping under it.
+    private var exits: [String: (Int32) -> Void] = [:]
 
     func launch(sessionID: String, cwd: String, model: String?,
                 onLine: @escaping (String) -> Void,
@@ -21,12 +24,23 @@ final class FakeLauncher: BridgeClientLaunching, @unchecked Sendable {
         launched.append((sessionID, cwd, model))
         let handle = FakeHandle(pid: Int32(4000 + launched.count))
         handles[sessionID] = handle
+        exits[sessionID] = onExit
         return handle
     }
 
     func handle(_ sessionID: String) -> FakeHandle? {
         lock.lock(); defer { lock.unlock() }
         return handles[sessionID]
+    }
+
+    /// The client goes, and says so. Called outside the lock, as a real client's exit arrives.
+    func fireExit(_ sessionID: String, status: Int32 = 0) {
+        lock.lock()
+        let handle = handles[sessionID]
+        let exit = exits[sessionID]
+        lock.unlock()
+        handle?.simulateExit()
+        exit?(status)
     }
 }
 

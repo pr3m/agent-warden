@@ -135,8 +135,23 @@ a real disposable session.
 | Voice wakeup — an event reaching a live ChatGPT voice conversation | No supported third-party injection endpoint has been established. Local bridge events do not prove a voice wakeup |
 | Orchestrating the four open worktree sessions | Follows from the first row. Until a channel exists, those sessions are observed and not driven |
 | Retrospective recovery of a request missed before the handoff rule existed | Proposed as an app-owned startup reconciliation; deliberately not built |
+| Giving a headless session a terminal after it started — **DONE** | `openTerminal`, and the `⋯` menu's "Open in Ghostty tab". A hand-over, not a mirror: a running client cannot be re-parented onto a new tab's pty, and one transcript takes one writer, so the client is stopped and the conversation reopened with `resume` once the exit is **confirmed**. A turn in flight refuses with `.busy`; so does a send that arrives mid-hand-over, because the handle outlives the request that ended it. Requires an authorization, like `stop`, since it ends a client the caller may not have started |
 
 ## Known rough edges
+
+- **Three tests hold real-time deadlines and fail when the machine is busy.** `ScriptGateTests`'
+  blocked-script test and `BridgeTests`' pipe-write and stop-while-starting tests each wait up to
+  5s for a thread to make progress. On a loaded machine — a cold build, or several agents working —
+  they fail and pass again on a rerun. Measured interleaved, `main` and a feature branch fail at
+  the same rate, so this is the suite's own fragility rather than any one change's. Fixing it means
+  giving those three a signal rather than a deadline.
+- **`BridgeSessionPhase` is a plain raw-value enum, so a peer that does not know a phase throws on
+  the whole response.** Adding `handingOver` means an older `aa-mcp` decoding a `sessions` list
+  containing one gets nothing rather than the rest. Everything ships in one bundle today, so this
+  only bites an orphaned old host — but the next phase added should consider a tolerant case.
+- **`BridgeSurfaceState` is rebuilt from `handle as? VisibleClaudeHandle` in four places.** A
+  `surfaceState` property on `BridgeClientHandle` would remove three downcasts and make "this handle
+  has a surface" a fact about the type. Left alone as a refactor with no behaviour change attached.
 
 - **`AttentionEngine` is main-thread only** by convention, not enforcement.
 - **The MCP read path is deliberately unscoped.** `approvedRoots` governs what the bridge may
