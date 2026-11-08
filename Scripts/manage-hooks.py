@@ -166,7 +166,8 @@ def write_settings(path: str, settings: dict, expected_raw: str | None) -> None:
     mode = stat.S_IMODE(os.stat(path).st_mode) if os.path.exists(path) else 0o600
     temporary = os.path.join(directory, f".agent-warden-write-{os.getpid()}.tmp")
     with open(temporary, "w", encoding="utf-8") as handle:
-        json.dump(settings, handle, indent=2)
+        # `ensure_ascii=False`: the default rewrote every em dash in the user's own text as `—`.
+        json.dump(settings, handle, indent=2, ensure_ascii=False)
         handle.write("\n")
     os.chmod(temporary, mode)
     os.replace(temporary, path)
@@ -261,12 +262,50 @@ def strip_ours(settings: dict, commands: set[str], created: dict | None = None) 
     return removed
 
 
-def add_ours(settings: dict, emit_path: str) -> tuple[list[dict], dict]:
+FORWARDER_NAMES = {EMITTER_NAME, EMITTER_NAME + ".sh"}
+
+
+def forwarded_elsewhere(groups: object, matcher: str | None, arguments: list[str]) -> bool:
+    """True when a hook that is not ours already sends this exact signal.
+
+    A settings file shared across machines routes the emitter through the user's own wrapper —
+    `bash "$HOME/.claude/hooks/aa-emit.sh" --kind approval`, a no-op where the app is absent.
+    Ownership rules forbid touching it, and adding ours beside it fired every event twice. So an
+    entry under the same matcher that runs something named `aa-emit` or `aa-emit.sh` with
+    *identical* arguments counts as coverage — but only while that program exists, so a wrapper
+    deleted since cannot leave the event unwired.
+    """
+    if not isinstance(groups, list):
+        return False
+    for group in groups:
+        if not isinstance(group, dict) or (group.get("matcher") or None) != matcher:
+            continue
+        for entry in group.get("hooks") or []:
+            command = entry.get("command") if isinstance(entry, dict) else None
+            if not isinstance(command, str):
+                continue
+            try:
+                tokens = shlex.split(command)
+            except ValueError:
+                continue
+            for index, token in enumerate(tokens):
+                program = os.path.expandvars(os.path.expanduser(token))
+                if (os.path.basename(program) in FORWARDER_NAMES and tokens[index + 1:] == arguments
+                        and os.path.isfile(program)):
+                    return True
+    return False
+
+
+def add_ours(settings: dict, emit_path: str) -> tuple[list[dict], dict, int]:
     created_hooks_key = "hooks" not in settings
     hooks = settings.setdefault("hooks", {})
     created_events: list[str] = []
     recorded = []
+    forwarded = 0
     for event, matcher, arguments in HOOK_ENTRIES:
+        if forwarded_elsewhere(hooks.get(event), matcher, arguments):
+            forwarded += 1
+            continue
         if event not in hooks:
             created_events.append(event)
         groups = hooks.setdefault(event, [])
@@ -282,7 +321,9 @@ def add_ours(settings: dict, emit_path: str) -> tuple[list[dict], dict]:
         group["hooks"] = [{"type": "command", "command": command, "timeout": HOOK_TIMEOUT}]
         groups.append(group)
         recorded.append({"event": event, "matcher": matcher, "command": command})
-    return recorded, {"events": created_events, "hooksKey": created_hooks_key}
+    if created_hooks_key and not hooks:
+        settings.pop("hooks")
+    return recorded, {"events": created_events, "hooksKey": created_hooks_key and bool(hooks)}, forwarded
 
 
 def count_ours(settings: dict, commands: set[str]) -> dict:
@@ -371,7 +412,7 @@ def main() -> int:
 
         previous = manifest.get("targets", {}).get(settings_path, {})
         removed = strip_ours(settings, removable, previous.get("created"))
-        recorded, created = add_ours(settings, emit_path)
+        recorded, created, forwarded = add_ours(settings, emit_path)
 
         if args.dry_run:
             print(json.dumps(settings.get("hooks", {}), indent=2))
@@ -395,6 +436,8 @@ def main() -> int:
         print(f"manifest      : {manifest_path}")
         print(f"hook command  : {command_string(emit_path, ['--signal', '…'])}")
         print(f"entries wired : {len(recorded)} across {len({e['event'] for e in recorded})} events")
+        if forwarded:
+            print(f"already forwarded: {forwarded} signal(s) by your own {EMITTER_NAME} hook — not added twice")
         if removed:
             print(f"replaced      : {removed} previous Agent Warden entries")
         if surviving:

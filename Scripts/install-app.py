@@ -260,6 +260,7 @@ def main() -> None:
     wired = install / "Contents" / "MacOS"
     manifest_text = (data / "install-manifest.json").read_text() if (data / "install-manifest.json").exists() else ""
     say("hooks point at", "the installed bundle" if str(wired / "aa-emit") in settings.read_text()
+        else "your own forwarder (left as it is)" if "already forwarded" in hooks.stdout
         else "WARNING: something other than the installed bundle")
     say("manifest names", "the installed bundle" if str(wired / "aa-emit") in manifest_text
         else "WARNING: a path that is not the installed bundle")

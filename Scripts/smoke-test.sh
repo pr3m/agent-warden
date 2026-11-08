@@ -748,6 +748,34 @@ STATUS_OUT="$(/usr/bin/python3 Scripts/manage-hooks.py status --settings "$OWN" 
 contains "status names lookalikes without claiming them" "unowned lookalikes" "$STATUS_OUT"
 contains "status reports no owned commands without a manifest" "owned commands: 0" "$STATUS_OUT"
 
+echo "  — your own forwarder already covers it —"
+FWD_DIR="$WORK/home-hooks"
+mkdir -p "$FWD_DIR"
+printf '#!/bin/bash\nexit 0\n' > "$FWD_DIR/aa-emit.sh"
+FWD="$WORK/forwarded-settings.json"
+/usr/bin/python3 - "$FWD" "$FWD_DIR/aa-emit.sh" "$ROOT/Scripts/manage-hooks.py" <<'PYEOF'
+import importlib.util, json, sys
+path, wrapper, script = sys.argv[1:4]
+spec = importlib.util.spec_from_file_location("mh", script)
+mh = importlib.util.module_from_spec(spec); spec.loader.exec_module(mh)
+hooks = {}
+for event, matcher, arguments in mh.HOOK_ENTRIES:
+    group = {"matcher": matcher} if matcher else {}
+    group["hooks"] = [{"type": "command", "command": f'bash "{wrapper}" ' + " ".join(arguments), "timeout": 5}]
+    hooks.setdefault(event, []).append(group)
+json.dump({"note": "keep — as written", "hooks": hooks}, open(path, "w"), indent=2, ensure_ascii=False)
+PYEOF
+cp "$FWD" "$FWD.original"
+/usr/bin/python3 Scripts/manage-hooks.py install --settings "$FWD" --emit-path "$EMIT" --manifest "$WORK/fwd-manifest.json" > "$WORK/fwd-install.log" 2>&1
+check "install adds nothing your own forwarder already sends" "0" "$(grep -c "$EMIT" "$FWD" | tr -d ' ')"
+contains "and says why" "already forwarded" "$(cat "$WORK/fwd-install.log")"
+check "and your entries come out as they went in" "$(cat "$FWD.original")" "$(cat "$FWD")"
+/usr/bin/python3 Scripts/manage-hooks.py install --settings "$FWD" --emit-path "$EMIT" --manifest "$WORK/fwd-manifest.json" >/dev/null 2>&1
+check "and a second install still adds nothing" "0" "$(grep -c "$EMIT" "$FWD" | tr -d ' ')"
+rm "$FWD_DIR/aa-emit.sh"
+/usr/bin/python3 Scripts/manage-hooks.py install --settings "$FWD" --emit-path "$EMIT" --manifest "$WORK/fwd-manifest.json" >/dev/null 2>&1
+check "a forwarder whose script is gone does not count — ours are wired" "16" "$(grep -c "$EMIT" "$FWD" | tr -d ' ')"
+
 echo
 echo "== 16c. The login item is owned by its contents, not by a grep =="
 LA="$WORK/dev.agentwarden.plist"
