@@ -90,10 +90,10 @@ final class PowerDaemon: @unchecked Sendable {
                 log("SleepDisabled is set but no marker of ours — leaving it alone")
                 return
             }
-            HeldMarker.clear()
             if let error = PmsetControl.write(.off) {
-                log("startup revert failed: \(error.rawValue)")
+                log("startup revert failed: \(error.rawValue) — keeping the marker for the next try")
             } else {
+                HeldMarker.clear()
                 log("reverted a block left by a previous run")
             }
         }
@@ -159,7 +159,7 @@ final class PowerDaemon: @unchecked Sendable {
                 // The lease granted only because the block was observed *not* already set
                 // by somebody else, so whatever half-state that write left behind is ours
                 // to undo. Rolling the lease back yields `.clearBlock`, which is exactly
-                // the revert — marker first, then `pmset` — so route it through `apply`
+                // the revert — `pmset`, then the marker — so route it through `apply`
                 // rather than reimplementing the ordering here.
                 log("could not set the block (\(error.rawValue)) — rolling back")
                 apply(lease.release(connection: connection).effect)
@@ -168,8 +168,8 @@ final class PowerDaemon: @unchecked Sendable {
             HeldMarker.write()
             return decision.reply
         case .clearBlock:
-            HeldMarker.clear()
             if let error = PmsetControl.write(.off) { return .error(error) }
+            HeldMarker.clear()
             return decision.reply
         }
     }
@@ -186,10 +186,10 @@ final class PowerDaemon: @unchecked Sendable {
             // missing case into a silently ignored privileged write.
             if PmsetControl.write(.on) == nil { HeldMarker.write() }
         case .clearBlock:
-            HeldMarker.clear()
             if let error = PmsetControl.write(.off) {
-                log("revert failed: \(error.rawValue)")
+                log("revert failed: \(error.rawValue) — keeping the marker so startup can finish it")
             } else {
+                HeldMarker.clear()
                 log("lease ended — block cleared")
             }
         }
@@ -211,9 +211,11 @@ final class PowerDaemon: @unchecked Sendable {
     /// daemon needs because `KeepAlive` is "a likely recovery path, not a guarantee".
     ///
     /// Everything here is the ordinary release path, not a special one: the same `clearBlock`
-    /// effect, applied through the same `apply`, which clears the marker before the setting for
-    /// the same reason it always does. The expiry timer is cancelled first so it cannot fire
-    /// against a lease that is being given up.
+    /// effect, applied through the same `apply`, which keeps the marker until the setting is
+    /// verified cleared — at system shutdown that write can fail or be cut off, and the kept
+    /// marker is what lets the next boot's `reconcile()` clear the block instead of disowning
+    /// it. The expiry timer is cancelled first so it cannot fire against a lease that is being
+    /// given up.
     ///
     /// **Bounded, and that is what makes it usable from a signal handler's queue.** `queue.sync`
     /// waits for whatever the state queue is doing, and since every `pmset` call is now capped at

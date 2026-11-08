@@ -52,13 +52,16 @@ enum HeldMarker {
         }
     }
 
-    /// Removed *before* the block is cleared, never after.
+    /// Removed only *after* `pmset` has verified the block is cleared, never before.
     ///
-    /// A crash in between then leaves the safe combination — no marker, block still set —
-    /// where startup declines to touch a setting it can no longer prove is its own and the
-    /// operator has the documented `sudo pmset -a disablesleep 0` repair. The other order
-    /// would leave "marker present, block already cleared", and the next startup would
-    /// clear a block that by then could belong to somebody else.
+    /// It used to be the other way round, to rule out "marker present, block already
+    /// cleared" handing the next startup a block somebody else had since set. That traded a
+    /// microsecond crash window for the commonest way a lease ends: a reboot with roam on.
+    /// `SIGTERM` at system shutdown arrives while `powerd` is going down, the `pmset` write
+    /// fails or is cut off, and marker-first left "no marker, block still set" — a Mac that came back up
+    /// unable to sleep, refusing roam as `foreign`, until someone ran
+    /// `sudo pmset -a disablesleep 0` by hand. Keeping the marker until the write is verified
+    /// lets that reboot's own `reconcile()` finish the job instead.
     static func clear() {
         try? FileManager.default.removeItem(atPath: path)
     }

@@ -191,8 +191,9 @@ Therefore:
   touching.
 
   The marker is a root-owned file at `/Library/Application Support/dev.agentwarden/held`
-  (`root:wheel`, `0600`), written *after* `acquire` verifies `0 → 1` and removed *before*
-  `release` writes `0`. It must be root-owned and outside every user-writable tree for the
+  (`root:wheel`, `0600`), written *after* `acquire` verifies `0 → 1` and removed only *after*
+  `release` has verified `0` — so a write that fails at system shutdown leaves the marker
+  for the next boot's startup to finish the revert. It must be root-owned and outside every user-writable tree for the
   same reason the binary is: a user-writable marker would let anyone make the daemon clear
   a setting it does not own. It records nothing but the fact and the time.
 
