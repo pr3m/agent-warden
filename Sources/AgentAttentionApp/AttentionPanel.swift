@@ -1523,7 +1523,22 @@ extension AttentionPanelController {
     var debugClippedLabels: [String] {
         guard let root = panel.contentView else { return [] }
         root.layoutSubtreeIfNeeded()
-        return AttentionPanelController.textFields(in: root).compactMap { field in
+        // A button's title against the room it is actually drawn in, in the button's own font.
+        // Not `fittingSize`, which counts bezel padding the compact ⋯ buttons trim on purpose, and
+        // not `titleRect(forBounds:)`, which on that 34pt ⋯ claims 11pt while AppKit draws the
+        // dots in 19pt. From macOS 27 the drawn room is the private title field's frame.
+        let clippedButtons = AttentionPanelController.buttons(in: root).compactMap { button -> String? in
+            guard !button.title.isEmpty, button.imagePosition != .imageOnly,
+                  let cell = button.cell else { return nil }
+            let needed = NSAttributedString(
+                string: button.title,
+                attributes: [.font: button.font ?? NSFont.systemFont(ofSize: 11)]
+            ).size().width
+            let room = button.subviews.compactMap { $0 as? NSTextField }.first?.frame.width
+                ?? cell.titleRect(forBounds: button.bounds).width
+            return needed > room + 0.5 ? button.title : nil
+        }
+        return clippedButtons + AttentionPanelController.textFields(in: root).compactMap { field in
             guard !field.stringValue.isEmpty, field.frame.width > 1 else { return nil }
             let text = NSAttributedString(
                 string: field.stringValue,
@@ -1608,7 +1623,12 @@ extension AttentionPanelController {
         return found
     }
 
+    /// Stops at a button. From macOS 27 a button draws its title through a private
+    /// `NSButtonTextField` subview that reports the 13pt system font, not the button's own 11pt —
+    /// so measuring it flagged every small button as clipped while each one visibly fit. A
+    /// button's title is the button's to size; `debugClippedLabels` checks it through the button.
     static func textFields(in view: NSView) -> [NSTextField] {
+        if view is NSButton { return [] }
         var found: [NSTextField] = []
         if let field = view as? NSTextField { found.append(field) }
         for child in view.subviews { found += textFields(in: child) }
